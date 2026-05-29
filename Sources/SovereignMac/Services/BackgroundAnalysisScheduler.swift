@@ -94,10 +94,17 @@ final class BackgroundAnalysisScheduler: ObservableObject {
         )
 
         let runtime = await AIRuntimeStatus.current(dataSource: store.dataSource, summaries: store.dailySummaries)
+        let modelBuilder = PersonalHealthModelBuilder()
+        let healthModel = modelBuilder.build(summaries: store.dailySummaries, workouts: store.recentWorkouts, sleep: store.recentSleep)
+        let forecast = ForecastEngine().forecast(from: healthModel)
+        let prescription = ExercisePrescriptionEngine().prescribe(from: healthModel)
         let prompt = HealthPromptBuilder.buildUserPrompt(
             question: type == "morning_summary" ? "生成今天的晨间健康总结和训练建议。" : "生成今天的晚间健康总结和明日建议。",
             context: context,
-            runtime: runtime
+            runtime: runtime,
+            healthModel: healthModel,
+            forecast: forecast,
+            prescription: prescription
         )
 
         do {

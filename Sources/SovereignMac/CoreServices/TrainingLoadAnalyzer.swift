@@ -1,8 +1,80 @@
 import Foundation
 
+// MARK: - Training Load Result
+
+enum TrainingLoadConfidence: String, Codable {
+    case high = "High (HR-based)"
+    case medium = "Medium (type + HR estimated)"
+    case low = "Low (type-based estimate)"
+}
+
+struct TrainingLoadResult: Codable, Equatable {
+    var load: Double
+    var basis: String
+    var confidence: TrainingLoadConfidence
+    var intensityLabel: String
+}
+
 struct TrainingLoadAnalyzer {
-    /// Calculate training load from workout data.
-    /// Uses simplified TRIMP when heart rate data is available; falls back to type-based estimation.
+    /// Full result with basis and confidence.
+    static func calculateLoadResult(
+        workoutType: WorkoutType,
+        durationMinutes: Double,
+        avgHeartRate: Double?,
+        maxHeartRate: Double?,
+        estimatedMaxHR: Double = 190,
+        estimatedRestingHR: Double = 60
+    ) -> TrainingLoadResult {
+        guard durationMinutes > 0 else {
+            return TrainingLoadResult(load: 0, basis: "Zero duration", confidence: .low, intensityLabel: "None")
+        }
+
+        if let avgHR = avgHeartRate {
+            let hrReserve = max(estimatedMaxHR - estimatedRestingHR, 1)
+            let hrRatio = max(0, (avgHR - estimatedRestingHR)) / hrReserve
+
+            let intensityFactor: Double
+            let label: String
+            if hrRatio < 0.5 {
+                intensityFactor = 0.5; label = "Very Low"
+            } else if hrRatio < 0.65 {
+                intensityFactor = 1.0; label = "Low"
+            } else if hrRatio < 0.75 {
+                intensityFactor = 1.8; label = "Moderate"
+            } else if hrRatio < 0.85 {
+                intensityFactor = 2.8; label = "High"
+            } else {
+                intensityFactor = 4.0; label = "Very High"
+            }
+
+            let load = durationMinutes * intensityFactor * hrRatio
+            return TrainingLoadResult(
+                load: load,
+                basis: "TRIMP: \(String(format: "%.0f", durationMinutes))min × \(String(format: "%.1f", intensityFactor)) × HRratio \(String(format: "%.2f", hrRatio)) (avgHR \(String(format: "%.0f", avgHR)))",
+                confidence: .high,
+                intensityLabel: label
+            )
+        }
+
+        // No HR — type-based estimation
+        let factor = typeBasedIntensityFactor(workoutType)
+        let load = durationMinutes * factor
+        let label: String
+        if factor < 1.0 { label = "Very Low" }
+        else if factor < 1.5 { label = "Low" }
+        else if factor < 2.0 { label = "Moderate" }
+        else if factor < 2.5 { label = "High" }
+        else { label = "Very High" }
+
+        return TrainingLoadResult(
+            load: load,
+            basis: "Type-based: \(workoutType.rawValue) × \(String(format: "%.1f", factor)) × \(String(format: "%.0f", durationMinutes))min",
+            confidence: .low,
+            intensityLabel: label
+        )
+    }
+
+    /// Legacy: returns load value only.
     static func calculateLoad(
         workoutType: WorkoutType,
         durationMinutes: Double,
@@ -11,32 +83,7 @@ struct TrainingLoadAnalyzer {
         estimatedMaxHR: Double = 190,
         estimatedRestingHR: Double = 60
     ) -> Double {
-        guard durationMinutes > 0 else { return 0 }
-
-        // If we have HR data, use simplified TRIMP
-        if let avgHR = avgHeartRate {
-            let hrReserve = max(estimatedMaxHR - estimatedRestingHR, 1)
-            let hrRatio = max(0, (avgHR - estimatedRestingHR)) / hrReserve
-
-            let intensityFactor: Double
-            if hrRatio < 0.5 {
-                intensityFactor = 0.5   // Very low
-            } else if hrRatio < 0.65 {
-                intensityFactor = 1.0   // Low
-            } else if hrRatio < 0.75 {
-                intensityFactor = 1.8   // Moderate
-            } else if hrRatio < 0.85 {
-                intensityFactor = 2.8   // High
-            } else {
-                intensityFactor = 4.0   // Very high
-            }
-
-            return durationMinutes * intensityFactor * hrRatio
-        }
-
-        // No HR — use type-based estimation (lower confidence)
-        let factor = typeBasedIntensityFactor(workoutType)
-        return durationMinutes * factor
+        calculateLoadResult(workoutType: workoutType, durationMinutes: durationMinutes, avgHeartRate: avgHeartRate, maxHeartRate: maxHeartRate, estimatedMaxHR: estimatedMaxHR, estimatedRestingHR: estimatedRestingHR).load
     }
 
     /// Intensity factor by workout type when no HR data is available.

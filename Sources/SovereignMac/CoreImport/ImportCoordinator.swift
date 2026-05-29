@@ -231,12 +231,23 @@ struct ImportProgress: Equatable {
     // ETA
     var estimatedSecondsRemaining: TimeInterval?
 
+    /// Total records for current phase (set by service)
+    var phaseTotalRecords: Int64 = 0
+    /// Fraction complete within current phase (set by service, overrides file-based)
+    var phaseInternalFraction: Double = 0
+
     static let zero = ImportProgress()
 
     // Derived
     var fractionComplete: Double {
-        guard fileSizeBytes > 0 else { return 0 }
-        return min(Double(processedBytes) / Double(fileSizeBytes), 1.0)
+        get {
+            if phaseInternalFraction > 0 && phaseTotalRecords > 0 {
+                return phaseInternalFraction
+            }
+            guard fileSizeBytes > 0 else { return 0 }
+            return min(Double(processedBytes) / Double(fileSizeBytes), 1.0)
+        }
+        set { phaseInternalFraction = newValue }
     }
 
     var percentComplete: Int {

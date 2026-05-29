@@ -310,10 +310,18 @@ struct AICoachView: View {
                         dataSource: healthStore.dataSource
                     )
 
+                    let modelBuilder = PersonalHealthModelBuilder()
+                    let healthModel = modelBuilder.build(summaries: healthStore.dailySummaries, workouts: healthStore.recentWorkouts, sleep: healthStore.recentSleep)
+                    let forecast = ForecastEngine().forecast(from: healthModel)
+                    let prescription = ExercisePrescriptionEngine().prescribe(from: healthModel)
+
                     let prompt = HealthPromptBuilder.buildUserPrompt(
                         question: trimmed,
                         context: context,
-                        runtime: runtimeStatus
+                        runtime: runtimeStatus,
+                        healthModel: healthModel,
+                        forecast: forecast,
+                        prescription: prescription
                     )
                     let response = try await DeepSeekClient.shared.chat(
                         systemPrompt: HealthPromptBuilder.systemPrompt(for: runtimeStatus),

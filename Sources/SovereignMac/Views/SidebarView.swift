@@ -8,104 +8,27 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $selectedTab) {
-            Section("分析") {
+            Section {
                 ForEach([NavigationTab.overview, .trends, .recovery, .workouts], id: \.self) { tab in
                     Label(tab.rawValue, systemImage: tab.systemImage)
                         .tag(tab)
                 }
             }
 
-            Section("AI") {
+            Section {
                 Label(NavigationTab.coach.rawValue, systemImage: NavigationTab.coach.systemImage)
                     .tag(NavigationTab.coach)
             }
 
-            Section("数据") {
+            Section {
                 Label(NavigationTab.importData.rawValue, systemImage: NavigationTab.importData.systemImage)
                     .tag(NavigationTab.importData)
                 Label(NavigationTab.settings.rawValue, systemImage: NavigationTab.settings.systemImage)
                     .tag(NavigationTab.settings)
             }
 
-            Section("Status") {
-                // Data source
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(dataSourceColor)
-                        .frame(width: 7, height: 7)
-                    Text("Data: \(dataSourceLabel)")
-                        .font(AppTypography.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                // Import status
-                if importCoordinator.isImporting {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                                .frame(width: 12, height: 12)
-                            Text("Import: \(importCoordinator.progress.percentComplete)%")
-                                .font(AppTypography.caption)
-                                .foregroundColor(.accentColor)
-                        }
-                        Text("\(importCoordinator.progress.formattedProcessedSize) / \(importCoordinator.progress.formattedTotalSize)")
-                            .font(AppTypography.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                } else if case .completed = importCoordinator.state {
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.caption2)
-                            .foregroundColor(.green)
-                        Text("Import: Completed")
-                            .font(AppTypography.caption)
-                            .foregroundColor(.secondary)
-                    }
-                } else if case .failed = importCoordinator.state {
-                    HStack(spacing: 6) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.caption2)
-                            .foregroundColor(.red)
-                        Text("Import: Failed")
-                            .font(AppTypography.caption)
-                            .foregroundColor(.secondary)
-                    }
-                } else {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(Color.gray.opacity(0.4))
-                            .frame(width: 7, height: 7)
-                        Text("Import: Idle")
-                            .font(AppTypography.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-
-                // AI mode
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(aiModeColor)
-                        .frame(width: 7, height: 7)
-                    Text("AI: \(runtimeStatus.providerMode.shortLabel)")
-                        .font(AppTypography.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                // Data counts
-                if !healthStore.dailySummaries.isEmpty {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("\(healthStore.dbSummaryCount) days · \(healthStore.dbWorkoutCount) workouts")
-                            .font(AppTypography.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                }
-
-                if let lastAnalysis = healthStore.lastAnalysisDate {
-                    Text("Analyzed \(formatRelative(lastAnalysis))")
-                        .font(AppTypography.caption2)
-                        .foregroundColor(.secondary)
-                }
+            Section {
+                statusFooter
             }
         }
         .listStyle(.sidebar)
@@ -113,46 +36,67 @@ struct SidebarView: View {
             runtimeStatus = await AIRuntimeStatus.current(dataSource: healthStore.dataSource, summaries: healthStore.dailySummaries)
         }
         .onChange(of: healthStore.dataSource) { _ in
-            Task {
-                runtimeStatus = await AIRuntimeStatus.current(dataSource: healthStore.dataSource, summaries: healthStore.dailySummaries)
+            Task { runtimeStatus = await AIRuntimeStatus.current(dataSource: healthStore.dataSource, summaries: healthStore.dailySummaries) }
+        }
+    }
+
+    // MARK: - Status Footer
+
+    private var statusFooter: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Data source
+            HStack(spacing: 5) {
+                Circle().fill(dataSourceColor).frame(width: 6, height: 6)
+                Text(dataSourceLabel)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+
+            // Import
+            if importCoordinator.isImporting {
+                HStack(spacing: 5) {
+                    ProgressView().scaleEffect(0.55).frame(width: 10, height: 10)
+                    Text("Import \(importCoordinator.progress.percentComplete)%")
+                        .font(.system(size: 10))
+                        .foregroundColor(.accentColor)
+                }
+            }
+
+            // AI mode
+            HStack(spacing: 5) {
+                Circle().fill(aiModeColor).frame(width: 6, height: 6)
+                Text("AI: \(runtimeStatus.providerMode.shortLabel)")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+
+            // Summary counts
+            if healthStore.dbSummaryCount > 0 {
+                Text("\(healthStore.dbSummaryCount)d · \(healthStore.dbWorkoutCount) workouts")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary.opacity(0.7))
             }
         }
+        .padding(.vertical, 4)
     }
 
     private var dataSourceColor: Color {
         switch healthStore.dataSource {
-        case .empty: return .gray
-        case .mockLive: return .orange
-        case .appleHealthImport: return .green
-        case .iphoneSync: return .blue
-        case .watchLive: return .purple
-        case .unknown: return .gray
+        case .empty: .gray; case .mockLive: .orange; case .appleHealthImport: .green
+        case .iphoneSync: .blue; case .watchLive: .purple; default: .gray
         }
     }
 
     private var dataSourceLabel: String {
         switch healthStore.dataSource {
-        case .empty: return "Empty"
-        case .mockLive: return "Demo"
-        case .appleHealthImport: return "Apple Health"
-        case .iphoneSync: return "iPhone"
-        case .watchLive: return "Watch"
-        case .unknown: return "Unknown"
+        case .empty: "Empty"; case .mockLive: "Demo"; case .appleHealthImport: "Apple Health"
+        case .iphoneSync: "iPhone"; case .watchLive: "Watch"; default: "Unknown"
         }
     }
 
     private var aiModeColor: Color {
         switch runtimeStatus.providerMode {
-        case .localRules: return .blue
-        case .deepSeek: return .purple
-        case .fallback: return .orange
-        case .disabled: return .gray
+        case .localRules: .blue; case .deepSeek: .purple; case .fallback: .orange; case .disabled: .gray
         }
-    }
-
-    private func formatRelative(_ date: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: Date())
     }
 }

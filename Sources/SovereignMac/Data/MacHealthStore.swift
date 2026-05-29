@@ -211,6 +211,55 @@ final class MacHealthStore: ObservableObject {
         lastImportDiagnostic = (try? context.fetch(diagDescriptor))?.first
     }
 
+    // MARK: - Recompute (fix old bad data)
+
+    func recomputeWorkoutDurations() async {
+        guard let context = modelContext else { return }
+        isLoading = true
+        defer { isLoading = false }
+
+        let allWorkouts = (try? context.fetch(FetchDescriptor<WorkoutSession>())) ?? []
+        var fixed = 0
+
+        for workout in allWorkouts {
+            let resolved = WorkoutDurationTruthResolver.resolve(
+                rawDuration: workout.rawDuration,
+                rawDurationUnit: workout.rawDurationUnit,
+                startDate: workout.startDate,
+                endDate: workout.endDate
+            )
+
+            if abs(workout.durationSeconds - resolved.finalDurationSeconds) > 1
+                || workout.durationSource != resolved.source {
+                workout.durationSeconds = resolved.finalDurationSeconds
+                workout.durationSource = resolved.source
+                workout.durationWarning = resolved.warning
+                fixed += 1
+            }
+        }
+
+        if fixed > 0 {
+            try? context.save()
+            // Recompute training loads too
+            for workout in allWorkouts {
+                let result = TrainingLoadAnalyzer.calculateLoadResult(
+                    workoutType: workout.workoutType,
+                    durationMinutes: workout.durationSeconds / 60,
+                    avgHeartRate: workout.avgHeartRate,
+                    maxHeartRate: workout.maxHeartRate
+                )
+                workout.trainingLoad = result.load
+                workout.trainingLoadBasis = result.basis
+                workout.trainingLoadConfidence = result.confidence.rawValue
+            }
+            try? context.save()
+        }
+
+        await refresh()
+        await rebuildDailySummaries()
+        await runLocalAnalysis()
+    }
+
     // MARK: - Clear Data
 
     func clearAllData() async {

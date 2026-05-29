@@ -103,6 +103,29 @@ actor HealthImportService {
             throw error
         }
 
+        // Weighted progress helper
+        let weights: [ImportPhase: Double] = [
+            .validating: 0.01, .measuringFile: 0.01, .unzipping: 0.03, .locatingExportXML: 0.02, .openingXML: 0.02,
+            .parsingXML: 0.45,
+            .filteringIncrementalData: 0.02,
+            .normalizing: 0.05,
+            .deduplicating: 0.20,
+            .buildingDailySummaries: 0.10,
+            .saving: 0.08,
+            .completed: 0.01
+        ]
+        var phaseBase: Double = 0
+        func emitProgress(_ phase: ImportPhase, _ fractionWithinPhase: Double, msg: String) {
+            let w = weights[phase] ?? 0.02
+            let pct = min(phaseBase + w * max(0, min(1, fractionWithinPhase)), 0.995)
+            prog.phase = phase
+            prog.message = msg
+            prog.processedBytes = Int64(pct * Double(prog.fileSizeBytes))
+            prog.fractionComplete = pct
+            progress(prog)
+        }
+        func endPhase(_ phase: ImportPhase) { phaseBase += weights[phase] ?? 0.02 }
+
         // --- Phase 2: Filter for incremental ---
         let metricsToProcess: [ParsedHealthMetric]
         let filterSkipCount: Int64
@@ -135,20 +158,22 @@ actor HealthImportService {
         )
 
         // --- Phase 4: Dedup and persist ---
-        prog.phase = .deduplicating
-        prog.message = "Deduplicating against database..."
-        progress(prog)
+        endPhase(.normalizing)
+        let totalForDedup = metricsToProcess.count + allWorkouts.count + allSleep.count
+        prog.phaseTotalRecords = Int64(totalForDedup)
+        emitProgress(.deduplicating, 0, msg: "Deduplicating \(totalForDedup) records...")
 
         let stats = await deduplicateAndPersist(
             metrics: normalizedMetrics,
             workouts: normalizedWorkouts,
             sleep: normalizedSleep,
             into: context,
-            progress: { deduped in
-                prog.recordsDeduplicated = deduped
-                progress(prog)
+            progress: { processed, deduped in
+                let frac = totalForDedup > 0 ? Double(processed) / Double(totalForDedup) : 0
+                emitProgress(.deduplicating, frac, msg: "Checked \(processed)/\(totalForDedup) · Duplicates: \(deduped)")
             }
         )
+        endPhase(.deduplicating)
 
         // --- Phase 5: Build daily summaries ---
         prog.phase = .buildingDailySummaries
@@ -236,7 +261,7 @@ actor HealthImportService {
         workouts: [WorkoutSession],
         sleep: [SleepSession],
         into context: ModelContext,
-        progress: ((Int64) -> Void)? = nil
+        progress: ((_ processed: Int, _ deduped: Int64) -> Void)? = nil
     ) async -> PersistStats {
         var savedMetrics = 0
         var savedWorkouts = 0
@@ -280,7 +305,7 @@ actor HealthImportService {
                 for m in metricBatch { context.insert(m) }
                 metricBatch.removeAll()
                 try? context.save()
-                progress?(deduped)
+                progress?(savedMetrics + savedWorkouts + savedSleep, deduped)
             }
         }
         for m in metricBatch { context.insert(m) }
@@ -313,7 +338,7 @@ actor HealthImportService {
         for s in sleepBatch { context.insert(s) }
 
         try? context.save()
-        progress?(deduped)
+        progress?(savedMetrics + savedWorkouts + savedSleep, deduped)
 
         return PersistStats(
             savedMetrics: savedMetrics,

@@ -171,6 +171,15 @@ struct DataSettingsView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+
+                Button("重算运动时长与训练负荷") {
+                    Task { await healthStore.recomputeWorkoutDurations() }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                Text("如果导入的运动时长显示错误（如 2m 实际应为 2h），点击此处从 start/end date 重新计算。")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
             }
 
             Section("数据管理") {

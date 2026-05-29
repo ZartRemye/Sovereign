@@ -144,6 +144,8 @@ final class WorkoutSession {
     var maxHeartRate: Double?
     var activeEnergyKcal: Double?   // Now in kcal (was KJ)
     var trainingLoad: Double = 0
+    var trainingLoadBasis: String?
+    var trainingLoadConfidence: String?
     var sourceRaw: String = DataSource.unknown.rawValue
     var sourceName: String?
     var notes: String?
@@ -217,7 +219,9 @@ final class WorkoutSession {
 
     init(workoutType: WorkoutType, startDate: Date, endDate: Date, durationSeconds: Double,
          distanceMeters: Double? = nil, avgHeartRate: Double? = nil, maxHeartRate: Double? = nil,
-         activeEnergyKcal: Double? = nil, trainingLoad: Double = 0, source: DataSource = .unknown,
+         activeEnergyKcal: Double? = nil, trainingLoad: Double = 0,
+         trainingLoadBasis: String? = nil, trainingLoadConfidence: String? = nil,
+         source: DataSource = .unknown,
          sourceName: String? = nil, notes: String? = nil,
          rawWorkoutActivityType: String? = nil,
          rawDuration: Double? = nil, rawDurationUnit: String? = nil,
@@ -233,6 +237,8 @@ final class WorkoutSession {
         self.maxHeartRate = maxHeartRate
         self.activeEnergyKcal = activeEnergyKcal
         self.trainingLoad = trainingLoad
+        self.trainingLoadBasis = trainingLoadBasis
+        self.trainingLoadConfidence = trainingLoadConfidence
         self.sourceRaw = source.rawValue
         self.sourceName = sourceName
         self.notes = notes

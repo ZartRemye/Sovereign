@@ -38,11 +38,12 @@ struct HealthDataNormalizer {
         parsed.map { p in
             let workoutType = mapWorkoutType(p.type)
 
-            // Normalize duration using raw unit
-            let (durationSeconds, durationSource, durationWarning) = HealthUnitNormalizer.durationToSeconds(
-                value: p.rawDuration,
-                unit: p.rawDurationUnit,
-                dateBasedSeconds: p.dateBasedDurationSeconds
+            // Resolve true duration using truth resolver
+            let resolved = WorkoutDurationTruthResolver.resolve(
+                rawDuration: p.rawDuration,
+                rawDurationUnit: p.rawDurationUnit,
+                startDate: p.startDate,
+                endDate: p.endDate
             )
 
             // Normalize distance to meters using raw unit
@@ -57,9 +58,9 @@ struct HealthDataNormalizer {
                 unit: p.rawEnergyUnit
             )
 
-            let load = TrainingLoadAnalyzer.calculateLoad(
+            let loadResult = TrainingLoadAnalyzer.calculateLoadResult(
                 workoutType: workoutType,
-                durationMinutes: durationSeconds / 60,
+                durationMinutes: resolved.finalDurationMinutes,
                 avgHeartRate: p.avgHeartRate,
                 maxHeartRate: p.maxHeartRate
             )
@@ -68,12 +69,14 @@ struct HealthDataNormalizer {
                 workoutType: workoutType,
                 startDate: p.startDate,
                 endDate: p.endDate,
-                durationSeconds: durationSeconds,
+                durationSeconds: resolved.finalDurationSeconds,
                 distanceMeters: distanceMeters,
                 avgHeartRate: p.avgHeartRate,
                 maxHeartRate: p.maxHeartRate,
                 activeEnergyKcal: activeEnergyKcal,
-                trainingLoad: load,
+                trainingLoad: loadResult.load,
+                trainingLoadBasis: loadResult.basis,
+                trainingLoadConfidence: loadResult.confidence.rawValue,
                 source: .appleHealthImport,
                 sourceName: p.sourceName,
                 rawWorkoutActivityType: p.originalType,
@@ -83,8 +86,8 @@ struct HealthDataNormalizer {
                 rawDistanceUnit: p.rawDistanceUnit,
                 rawEnergy: p.rawEnergy,
                 rawEnergyUnit: p.rawEnergyUnit,
-                durationSource: durationSource.rawValue,
-                durationWarning: durationWarning
+                durationSource: resolved.source,
+                durationWarning: resolved.warning
             )
         }
     }
