@@ -77,52 +77,52 @@ final class PersonalHealthProfileBuilder {
             .prefix(4)
             .map { $0.key }
 
-        // Tags
+        // Tags (Chinese)
         var tags: [String] = []
-        if let steps = baselineSteps, steps > 8000 { tags.append("Active Lifestyle") }
-        if let sleep = baselineSleep, sleep < 7 { tags.append("Sleep Constrained") }
-        if typeCounts.contains(where: { $0.contains("Running") || $0.contains("Cycling") }) { tags.append("Endurance Base") }
-        if typeCounts.contains(where: { $0.contains("Strength") }) { tags.append("Strength Focused") }
-        if acwr > 1.3 { tags.append("Elevated Load") }
-        if let recovery = currentRecovery, recovery < 50 { tags.append("Recovery Limited") }
-        if let recovery = currentRecovery, recovery >= 70 { tags.append("Recovering Well") }
-        if workouts.count < 10 { tags.append("Building History") }
+        if let steps = baselineSteps, steps > 8000 { tags.append("活跃生活型") }
+        if let sleep = baselineSleep, sleep < 7 { tags.append("睡眠受限") }
+        if typeCounts.contains(where: { $0.contains("Running") || $0.contains("Cycling") }) { tags.append("有氧基础型") }
+        if typeCounts.contains(where: { $0.contains("Strength") }) { tags.append("力量训练导向") }
+        if acwr > 1.3 { tags.append("负荷偏高") }
+        if let recovery = currentRecovery, recovery < 50 { tags.append("恢复受限") }
+        if let recovery = currentRecovery, recovery >= 70 { tags.append("恢复良好") }
+        if workouts.count < 10 { tags.append("数据积累期") }
 
-        // Strengths
+        // Strengths (Chinese)
         var strengths: [String] = []
-        if let sleep = baselineSleep, sleep >= 7.5 { strengths.append("Consistent sleep duration") }
-        if let steps = baselineSteps, steps > 9000 { strengths.append("High daily activity") }
-        if let rhr = baselineRHR, rhr < 65 { strengths.append("Low resting heart rate") }
-        if let hrv = baselineHRV, hrv > 45 { strengths.append("Good HRV") }
-        if acwr >= 0.8 && acwr <= 1.2 { strengths.append("Balanced training load") }
+        if let sleep = baselineSleep, sleep >= 7.5 { strengths.append("睡眠时长充足稳定") }
+        if let steps = baselineSteps, steps > 9000 { strengths.append("日常活动量高") }
+        if let rhr = baselineRHR, rhr < 65 { strengths.append("静息心率偏低，心肺效率好") }
+        if let hrv = baselineHRV, hrv > 45 { strengths.append("心率变异性良好") }
+        if acwr >= 0.8 && acwr <= 1.2 { strengths.append("训练负荷均衡") }
 
-        // Constraints
+        // Constraints (Chinese)
         var constraints: [String] = []
-        if let sleep = baselineSleep, sleep < 6.5 { constraints.append("Sleep below 6.5h") }
-        if acwr > 1.5 { constraints.append("High injury risk (ACWR)") }
-        if let rhr = baselineRHR, let current = recent7.last?.restingHeartRate, current > rhr * 1.08 { constraints.append("Resting HR elevated") }
-        if sleepConsistency != nil && sleepConsistency! < 0.5 { constraints.append("Irregular sleep pattern") }
+        if let sleep = baselineSleep, sleep < 6.5 { constraints.append("平均睡眠不足 6.5 小时") }
+        if acwr > 1.5 { constraints.append("急慢性负荷比偏高，受伤风险上升") }
+        if let rhr = baselineRHR, let current = recent7.last?.restingHeartRate, current > rhr * 1.08 { constraints.append("静息心率较基线升高 8% 以上") }
+        if sleepConsistency != nil && sleepConsistency! < 0.5 { constraints.append("睡眠时间不规律") }
 
-        // Opportunities
+        // Opportunities (Chinese)
         var opportunities: [String] = []
-        if baselineSleep != nil && baselineSleep! < 7 { opportunities.append("Prioritize 7-8h sleep") }
-        if activityConsistency != nil && activityConsistency! < 0.6 { opportunities.append("More consistent daily activity") }
-        if workouts.count < 3 { opportunities.append("Add 2-3 weekly workouts") }
-        if acwr < 0.8 { opportunities.append("Gradually increase training volume") }
+        if baselineSleep != nil && baselineSleep! < 7 { opportunities.append("优先保证每天 7-8 小时睡眠") }
+        if activityConsistency != nil && activityConsistency! < 0.6 { opportunities.append("增加日常活动的规律性") }
+        if workouts.count < 3 { opportunities.append("每周增加 2-3 次结构化训练") }
+        if acwr < 0.8 { opportunities.append("可以逐步增加训练量") }
 
-        // Limitations
+        // Limitations (Chinese)
         var limitations: [String] = []
-        if sorted.count < 14 { limitations.append("Less than 14 days of data") }
-        if baselineHRV == nil { limitations.append("No HRV data") }
-        if baselineSteps == nil { limitations.append("Limited step data") }
+        if sorted.count < 14 { limitations.append("有效数据少于 14 天") }
+        if baselineHRV == nil { limitations.append("缺少 HRV 数据") }
+        if baselineSteps == nil { limitations.append("步数数据有限") }
 
-        // Readiness
+        // Readiness (Chinese)
         let readiness: String
         if let score = currentRecovery {
-            if score >= 75 { readiness = "Ready" }
-            else if score >= 50 { readiness = "Limited" }
-            else { readiness = "Rest Day Recommended" }
-        } else { readiness = "Insufficient Data" }
+            if score >= 75 { readiness = "准备充分" }
+            else if score >= 50 { readiness = "轻度受限" }
+            else { readiness = "建议休息日" }
+        } else { readiness = "数据不足" }
 
         return PersonalHealthProfile(
             dataRangeStart: dates.min(),

@@ -4,6 +4,7 @@ struct SidebarView: View {
     @Binding var selectedTab: NavigationTab
     @EnvironmentObject var healthStore: MacHealthStore
     @StateObject private var importCoordinator = ImportCoordinator.shared
+    @StateObject private var aiCoordinator = AIRequestCoordinator.shared
     @State private var runtimeStatus: AIRuntimeStatus = AIRuntimeStatus()
 
     var body: some View {
@@ -62,12 +63,19 @@ struct SidebarView: View {
                 }
             }
 
-            // AI mode
-            HStack(spacing: 5) {
-                Circle().fill(aiModeColor).frame(width: 6, height: 6)
-                Text("AI: \(runtimeStatus.providerMode.shortLabel)")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+            // AI mode / thinking
+            if case .thinking(let phase) = aiCoordinator.state {
+                HStack(spacing: 5) {
+                    ProgressView().scaleEffect(0.5).frame(width: 10, height: 10)
+                    Text("AI: \(phase)")
+                        .font(.system(size: 10)).foregroundColor(.accentColor)
+                }
+            } else {
+                HStack(spacing: 5) {
+                    Circle().fill(aiModeColor).frame(width: 6, height: 6)
+                    Text("AI: \(runtimeStatus.providerMode.shortLabel)")
+                        .font(.system(size: 11)).foregroundColor(.secondary)
+                }
             }
 
             // Summary counts

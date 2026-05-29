@@ -5,17 +5,15 @@ struct AICoachView: View {
     @EnvironmentObject var chatStore: ChatSessionStore
     @StateObject private var importCoordinator = ImportCoordinator.shared
     @State private var inputText: String = ""
-    @State private var isLoading: Bool = false
+    @StateObject private var aiCoordinator = AIRequestCoordinator.shared
     @State private var useDeepSeek: Bool = UserDefaults.standard.bool(forKey: "deepseek_enabled")
     @State private var aiMode: String = "Local Rules"
-    @State private var errorMessage: String?
     @State private var hasAPIKeyConfigured: Bool = false
     @State private var showDataBasis: UUID?
     @State private var showSessionList: Bool = true
     @State private var runtimeStatus: AIRuntimeStatus = AIRuntimeStatus()
 
-    private let safetyGuard = HealthSafetyGuard()
-    private let localRules = LocalRuleAIService.shared
+    private var isLoading: Bool { aiCoordinator.state != .idle && aiCoordinator.state != .completed }
 
     private var quickQuestions: [String] {
         healthStore.dataSource == .empty
@@ -148,9 +146,14 @@ struct AICoachView: View {
                     Circle().fill(dataSourceColor).frame(width: 5, height: 5)
                     Text(dataSourceLabel).font(.system(size: 11))
                     Text("·").foregroundColor(.secondary)
-                    HStack(spacing: 4) {
-                        Circle().fill(aiModeColor).frame(width: 5, height: 5)
-                        Text(aiMode).font(.system(size: 11))
+                    if case .thinking(let phase) = aiCoordinator.state {
+                        ProgressView().scaleEffect(0.5).frame(width: 10, height: 10)
+                        Text(phase).font(.system(size: 11)).foregroundColor(.accentColor)
+                    } else {
+                        HStack(spacing: 4) {
+                            Circle().fill(aiModeColor).frame(width: 5, height: 5)
+                            Text(aiMode).font(.system(size: 11))
+                        }
                     }
                 }
                 .foregroundColor(.secondary)
@@ -198,10 +201,10 @@ struct AICoachView: View {
                                 }
                             }
                     }
-                    if isLoading {
-                        HStack { ProgressView().padding(); Text("分析中...").font(.caption).foregroundColor(.secondary); Spacer() }
+                    if case .thinking(let phase) = aiCoordinator.state {
+                        HStack { ProgressView().padding(); Text("\(phase)").font(.caption).foregroundColor(.secondary); Spacer() }
                     }
-                    if let err = errorMessage {
+                    if case .failed(let err) = aiCoordinator.state {
                         Text(err).font(.caption).foregroundColor(.red).padding()
                     }
                 }
@@ -267,71 +270,10 @@ struct AICoachView: View {
     private func sendMessage(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, !isLoading else { return }
-        inputText = ""; errorMessage = nil
+        inputText = ""
 
-        // Ensure active session
-        if chatStore.activeSession == nil {
-            chatStore.createNewSession(runtime: runtimeStatus)
-        }
-
-        chatStore.appendUserMessage(trimmed)
-
-        // Identity question → local
-        if isIdentityQuestion(trimmed) {
-            let answer = buildIdentityResponse()
-            chatStore.appendAssistantMessage(markdown: answer, runtime: runtimeStatus, evidence: "身份说明 · \(runtimeStatus.providerMode.shortLabel)")
-            return
-        }
-
-        Task {
-            isLoading = true; defer { isLoading = false }
-            let safetyResult = safetyGuard.check(trimmed)
-            if !safetyResult.isSafe, let warning = safetyResult.warningMessage {
-                chatStore.appendFallbackMessage(markdown: warning, evidence: "安全拦截")
-                return
-            }
-            if runtimeStatus.isCloudAIEnabled {
-                await updateAIMode(to: "DeepSeek V4")
-                do {
-                    let context = HealthContextBuilder.build(summaries: healthStore.dailySummaries, workouts: healthStore.recentWorkouts, sleepSessions: healthStore.recentSleep, insights: healthStore.healthInsights, dataSource: healthStore.dataSource)
-                    let modelBuilder = PersonalHealthModelBuilder()
-                    let healthModel = modelBuilder.build(summaries: healthStore.dailySummaries, workouts: healthStore.recentWorkouts, sleep: healthStore.recentSleep)
-                    let forecast = ForecastEngine().forecast(from: healthModel)
-                    let prescription = ExercisePrescriptionEngine().prescribe(from: healthModel)
-                    let prompt = HealthPromptBuilder.buildUserPrompt(question: trimmed, context: context, runtime: runtimeStatus, healthModel: healthModel, forecast: forecast, prescription: prescription)
-                    let response = try await DeepSeekClient.shared.chat(systemPrompt: HealthPromptBuilder.systemPrompt(for: runtimeStatus), userMessage: prompt)
-                    let evidence = "DeepSeek V4 · \(context.dataQuality.dateRangeStart) – \(context.dataQuality.dateRangeEnd)" + (context.isMockData ? " · Demo" : "")
-                    chatStore.appendAssistantMessage(markdown: response, runtime: runtimeStatus, evidence: evidence)
-                    return
-                } catch {
-                    await updateAIMode(to: "Fallback (Local Rules)")
-                    chatStore.appendSystemMessage("DeepSeek 请求失败 (\(error.localizedDescription))，已切换本地规则引擎。")
-                }
-            }
-            await updateAIMode(to: "Local Rules")
-            let stream = await localRules.analyze(question: trimmed, summaries: healthStore.dailySummaries, workouts: healthStore.recentWorkouts, sleepSessions: healthStore.recentSleep)
-            for await msg in stream {
-                chatStore.appendAssistantMessage(markdown: msg.content, runtime: runtimeStatus, evidence: msg.contextSummary)
-            }
-        }
-    }
-
-    // MARK: - Identity
-
-    private func isIdentityQuestion(_ text: String) -> Bool {
-        ["你是谁", "你是什么", "deepseek", "你是deepseek", "你用什么模型", "什么模型", "哪个模型", "你的后端", "介绍一下你自己", "你是医生吗", "你能做什么"].contains { text.lowercased().contains($0) }
-    }
-
-    private func buildIdentityResponse() -> String {
-        var p: [String] = ["我是 **Sovereign App 里的 AI 健康教练与运动恢复分析师**。"]
-        if runtimeStatus.providerMode.isCloud {
-            p.append("当前语言模型后端是 **DeepSeek V4**（模型 \(runtimeStatus.modelName ?? "deepseek-v4-pro")）。DeepSeek 是我的后端，不是我本身。")
-        } else {
-            p.append("当前使用**本地规则引擎**。你可以在 Settings 中开启 DeepSeek 并配置 API Key 以启用云端分析。")
-        }
-        if !runtimeStatus.hasRealHealthData { p.append("目前没有真实 Apple Health 数据，无法做个性化分析。") }
-        p.append("我不是医生，不能做医疗诊断或开药。我的任务是帮你理解健康趋势、恢复状态、训练负荷和活动模式。")
-        return p.joined(separator: "\n\n")
+        aiCoordinator.ask(question: trimmed, store: healthStore, chatStore: chatStore,
+                          runtime: runtimeStatus, useDeepSeek: runtimeStatus.isCloudAIEnabled)
     }
 
     // MARK: - Helpers

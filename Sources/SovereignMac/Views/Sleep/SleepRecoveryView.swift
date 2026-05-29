@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 struct SleepRecoveryView: View {
     @EnvironmentObject var healthStore: MacHealthStore
@@ -93,6 +94,23 @@ struct SleepRecoveryView: View {
             VStack(alignment: .leading, spacing: AppSpacing.md) {
                 Text("最近睡眠")
                     .font(AppTypography.title3)
+
+                // Sleep duration bar chart (last 14 days from summaries)
+                let recentSummaries = healthStore.dailySummaries.prefix(14).reversed()
+                if #available(macOS 14.0, *), !recentSummaries.isEmpty {
+                    Chart {
+                        ForEach(Array(recentSummaries), id: \.id) { s in
+                            BarMark(x: .value("日期", s.dateFormatted), y: .value("睡眠", s.sleepHours))
+                                .foregroundStyle(Color.indigo.opacity(0.6))
+                        }
+                        RuleMark(y: .value("推荐 7h", 7)).foregroundStyle(.orange.opacity(0.6)).lineStyle(StrokeStyle(dash: [4,4]))
+                            .annotation(position: .trailing) { Text("7h").font(.caption2).foregroundColor(.orange) }
+                    }
+                    .chartXAxis { AxisMarks(values: .automatic) }
+                    .chartYAxis { AxisMarks { _ in AxisValueLabel(); AxisGridLine() } }
+                    .frame(height: 140)
+                    Text("总计睡眠时长（小时）· 橙色虚线为 7 小时推荐值").font(.caption2).foregroundColor(.secondary).padding(.bottom, 4)
+                }
 
                 let recentSleep = healthStore.recentSleep.prefix(7)
                 if recentSleep.isEmpty {

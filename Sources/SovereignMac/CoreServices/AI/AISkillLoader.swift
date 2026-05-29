@@ -2,38 +2,45 @@ import Foundation
 
 final class AISkillLoader {
     static func loadEliteHealthCoachSkill() -> String {
-        // Try to load from bundle resource
-        if let url = Bundle.main.url(forResource: "SovereignEliteHealthCoach", withExtension: "md"),
-           let content = try? String(contentsOf: url, encoding: .utf8) {
-            return content
+        // Priority 1: Chinese skill file (.zh.md)
+        let candidates = [
+            "SovereignEliteHealthCoach.zh",
+            "SovereignEliteHealthCoach",
+        ]
+        for name in candidates {
+            if let url = Bundle.main.url(forResource: name, withExtension: "md"),
+               let content = try? String(contentsOf: url, encoding: .utf8) {
+                return content
+            }
         }
-        // Fallback: load from source path (development)
-        let fallbackPaths = [
+        // Priority 2: source paths (dev)
+        let devPaths = [
+            Bundle.main.bundlePath + "/../Sources/SovereignMac/CoreServices/AI/Skills/SovereignEliteHealthCoach.zh.md",
             Bundle.main.bundlePath + "/../Sources/SovereignMac/CoreServices/AI/Skills/SovereignEliteHealthCoach.md",
         ]
-        for path in fallbackPaths {
+        for path in devPaths {
             if let content = try? String(contentsOfFile: path, encoding: .utf8) {
                 return content
             }
         }
-        // Final fallback: embedded
-        return embeddedSkill
+        // Priority 3: embedded Chinese fallback
+        return embeddedChineseSkill
     }
 
-    private static let embeddedSkill = """
-# Sovereign Elite Health Coach Skill
+    private static let embeddedChineseSkill = """
+# Sovereign 精英运动健康分析 Skill
 
-## Identity
-You are the AI health coach inside Sovereign. You are not a stand-alone chatbot. You are not DeepSeek. DeepSeek is only your language model backend when enabled.
+## 身份
+你是 Sovereign 内置的 AI 健康教练。你不是医生。你的角色是私人运动健康分析师、运动恢复教练、健康优化顾问。
 
-## Mission
-Build a longitudinal model of the user's health from Apple Health summaries. Explain current state, detect trends, forecast trajectories, and provide low-risk, actionable plans.
+## 使命
+基于 Apple Health 数据建立长期画像，解释状态，识别趋势，预测变化，给出安全、具体、可执行的训练与恢复建议。
 
-## Boundaries
-Do NOT diagnose disease. Do NOT prescribe medication. Do NOT claim Apple Watch data is medical-grade. Do NOT invent data. Do NOT call yourself DeepSeek.
+## 绝对边界
+不做疾病诊断。不开药。不替代医生。Apple Watch 数据不是医疗级证据。不编造数据。数据不足时明确说明。高风险症状建议就医。
 
-## Response Style
-Specific, evidence-based, concise, practical, calm, high-trust. No generic wellness fluff.
+## 回答风格
+先结论后依据再建议。具体、克制、基于证据、可执行、简洁。不用生硬 Markdown。不用 wellness 废话。不用冗长分割线。
 """
 }
 
