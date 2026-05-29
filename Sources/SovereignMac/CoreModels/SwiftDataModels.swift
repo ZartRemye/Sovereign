@@ -601,3 +601,96 @@ final class ImportDiagnostic {
         self.skippedReasonsJSON = (try? encoder.encode(skippedReasons)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
     }
 }
+
+// MARK: - Chat Session Record
+
+@Model
+final class ChatSessionRecord {
+    @Attribute(.unique) var id: UUID = UUID()
+    var title: String = "New Chat"
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
+    var dataSource: String = ""
+    var providerMode: String = ""
+    var modelName: String?
+    var healthDataRangeStart: Date?
+    var healthDataRangeEnd: Date?
+    var isPinned: Bool = false
+    var isArchived: Bool = false
+
+    @Relationship(deleteRule: .cascade, inverse: \ChatMessageRecord.session)
+    var messages: [ChatMessageRecord]? = []
+
+    init(title: String = "New Chat", dataSource: String = "", providerMode: String = "",
+         modelName: String? = nil, healthDataRangeStart: Date? = nil, healthDataRangeEnd: Date? = nil) {
+        self.title = title
+        self.dataSource = dataSource
+        self.providerMode = providerMode
+        self.modelName = modelName
+        self.healthDataRangeStart = healthDataRangeStart
+        self.healthDataRangeEnd = healthDataRangeEnd
+    }
+}
+
+// MARK: - Chat Message Record
+
+@Model
+final class ChatMessageRecord {
+    @Attribute(.unique) var id: UUID = UUID()
+    var role: String = "user" // "user", "assistant", "system"
+    var contentMarkdown: String = ""
+    var contentPlainText: String = ""
+    var createdAt: Date = Date()
+    var contextSummary: String?
+    var evidenceData: String?
+    var isFallback: Bool = false
+    var providerMode: String?
+    var modelName: String?
+
+    var session: ChatSessionRecord?
+
+    init(role: String, contentMarkdown: String, contentPlainText: String = "",
+         contextSummary: String? = nil, evidenceData: String? = nil,
+         isFallback: Bool = false, providerMode: String? = nil, modelName: String? = nil) {
+        self.role = role
+        self.contentMarkdown = contentMarkdown
+        self.contentPlainText = contentPlainText.isEmpty ? MarkdownSanitizer.plainText(from: contentMarkdown) : contentPlainText
+        self.contextSummary = contextSummary
+        self.evidenceData = evidenceData
+        self.isFallback = isFallback
+        self.providerMode = providerMode
+        self.modelName = modelName
+    }
+}
+
+// MARK: - Markdown Sanitizer
+
+enum MarkdownSanitizer {
+    /// Strip markdown to plain text for search/preview
+    static func plainText(from markdown: String) -> String {
+        var text = markdown
+        // Remove headers
+        text = text.replacingOccurrences(of: #"^#{1,6}\s+"#, with: "", options: .regularExpression)
+        // Remove bold/italic markers
+        text = text.replacingOccurrences(of: #"\*{1,3}([^*]+)\*{1,3}"#, with: "$1", options: .regularExpression)
+        // Remove inline code
+        text = text.replacingOccurrences(of: "`([^`]+)`", with: "$1", options: .regularExpression)
+        // Remove links keeping text
+        text = text.replacingOccurrences(of: #"\[([^\]]+)\]\([^)]+\)"#, with: "$1", options: .regularExpression)
+        // Collapse multiple newlines
+        text = text.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Clean model output for better display
+    static func displayMarkdown(from rawModelOutput: String) -> String {
+        var text = rawModelOutput
+        // Remove excessive horizontal rules
+        text = text.replacingOccurrences(of: "\n---\n", with: "\n\n")
+        // Collapse triple+ newlines
+        text = text.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+        // Remove trailing whitespace lines
+        text = text.replacingOccurrences(of: "(?m)^\\s+$", with: "", options: .regularExpression)
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}

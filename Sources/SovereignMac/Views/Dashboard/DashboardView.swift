@@ -78,7 +78,7 @@ struct DashboardView: View {
                 Text("Sovereign")
                     .font(AppTypography.largeTitle)
                 HStack(spacing: 8) {
-                    DataSourceBadge(source: healthStore.dataSource)
+                    HStack(spacing:4){Circle().fill(healthStore.dataSource == .appleHealthImport ? Color.green : healthStore.dataSource == .mockLive ? .orange : .gray).frame(width:6,height:6);Text(healthStore.dataSource.rawValue).font(.caption2).foregroundColor(.secondary)}.padding(.horizontal,8).padding(.vertical,3).background(Color.secondary.opacity(0.08),in:Capsule())
                     if let diag = healthStore.lastImportDiagnostic {
                         Text("· 导入于 \(diag.importTime, style: .relative)前")
                             .font(AppTypography.caption2)

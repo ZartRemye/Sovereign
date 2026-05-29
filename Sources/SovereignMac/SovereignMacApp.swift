@@ -18,6 +18,8 @@ struct SovereignMacApp: App {
             AIAnalysisCache.self,
             ImportDiagnostic.self,
             ImportCheckpoint.self,
+            ChatSessionRecord.self,
+            ChatMessageRecord.self,
         ])
         return try! ModelContainer(for: schema)
     }()
@@ -27,9 +29,11 @@ struct SovereignMacApp: App {
         Window("Sovereign", id: "main") {
             RootView()
                 .environmentObject(healthStore)
+                .environmentObject(ChatSessionStore.shared)
                 .frame(minWidth: 900, minHeight: 600)
                 .onAppear {
                     healthStore.configure(with: container.mainContext)
+                    ChatSessionStore.shared.configure(with: container.mainContext)
                     BackgroundAnalysisScheduler.shared.configure(store: healthStore)
                     BackgroundAnalysisScheduler.shared.start()
                     Task {

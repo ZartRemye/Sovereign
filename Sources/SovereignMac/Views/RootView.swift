@@ -17,26 +17,21 @@ struct RootView: View {
     @ViewBuilder
     private var contentView: some View {
         switch selectedTab {
-        case .overview:
-            DashboardView()
-        case .trends:
-            TrendsView()
-        case .recovery:
-            SleepRecoveryView()
-        case .workouts:
-            WorkoutsView()
-        case .coach:
-            AICoachView()
-        case .importData:
-            ImportView()
-        case .settings:
-            SettingsView()
+        case .overview:   DashboardView()
+        case .profile:    ProfileView()
+        case .trends:     TrendsView()
+        case .recovery:   SleepRecoveryView()
+        case .workouts:   WorkoutsView()
+        case .coach:      AICoachView()
+        case .importData: ImportView()
+        case .settings:   SettingsView()
         }
     }
 }
 
 enum NavigationTab: String, Identifiable, CaseIterable {
     case overview = "概览"
+    case profile = "画像"
     case trends = "趋势"
     case recovery = "恢复"
     case workouts = "运动"
@@ -48,13 +43,14 @@ enum NavigationTab: String, Identifiable, CaseIterable {
 
     var systemImage: String {
         switch self {
-        case .overview: return "heart.text.square"
-        case .trends: return "chart.xyaxis.line"
-        case .recovery: return "moon.zzz.fill"
-        case .workouts: return "figure.run"
-        case .coach: return "brain.head.profile"
-        case .importData: return "square.and.arrow.down"
-        case .settings: return "gearshape"
+        case .overview: "heart.text.square"
+        case .profile: "person.fill.viewfinder"
+        case .trends: "chart.xyaxis.line"
+        case .recovery: "moon.zzz.fill"
+        case .workouts: "figure.run"
+        case .coach: "brain.head.profile"
+        case .importData: "square.and.arrow.down"
+        case .settings: "gearshape"
         }
     }
 }

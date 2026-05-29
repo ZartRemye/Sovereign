@@ -9,7 +9,7 @@ struct SidebarView: View {
     var body: some View {
         List(selection: $selectedTab) {
             Section {
-                ForEach([NavigationTab.overview, .trends, .recovery, .workouts], id: \.self) { tab in
+                ForEach([NavigationTab.overview, .profile, .trends, .recovery, .workouts], id: \.self) { tab in
                     Label(tab.rawValue, systemImage: tab.systemImage)
                         .tag(tab)
                 }

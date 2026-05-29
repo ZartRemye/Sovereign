@@ -2,8 +2,8 @@ import SwiftUI
 
 struct AICoachView: View {
     @EnvironmentObject var healthStore: MacHealthStore
+    @EnvironmentObject var chatStore: ChatSessionStore
     @StateObject private var importCoordinator = ImportCoordinator.shared
-    @State private var messages: [ChatMessage] = []
     @State private var inputText: String = ""
     @State private var isLoading: Bool = false
     @State private var useDeepSeek: Bool = UserDefaults.standard.bool(forKey: "deepseek_enabled")
@@ -11,111 +11,37 @@ struct AICoachView: View {
     @State private var errorMessage: String?
     @State private var hasAPIKeyConfigured: Bool = false
     @State private var showDataBasis: UUID?
+    @State private var showSessionList: Bool = true
+    @State private var runtimeStatus: AIRuntimeStatus = AIRuntimeStatus()
 
     private let safetyGuard = HealthSafetyGuard()
     private let localRules = LocalRuleAIService.shared
 
-    @State private var runtimeStatus: AIRuntimeStatus = AIRuntimeStatus()
-
     private var quickQuestions: [String] {
-        if healthStore.dataSource == .empty {
-            return [
-                "如何导入 Apple Health 数据？",
-                "你现在使用什么模型？",
-                "为什么还不能分析我的健康？",
-                "Demo 数据和真实数据有什么区别？",
-            ]
-        }
-        return [
-            "我今天适合训练吗？",
-            "我最近恢复为什么变化？",
-            "我这周训练应该怎么安排？",
-            "我睡眠和疲劳有什么关系？",
-        ]
+        healthStore.dataSource == .empty
+            ? ["如何导入 Apple Health 数据？", "你现在使用什么模型？", "为什么还不能分析？", "Demo 和真实数据有什么区别？"]
+            : ["我今天适合训练吗？", "我最近恢复为什么变化？", "我这周训练应该怎么安排？", "我睡眠和疲劳有什么关系？"]
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            coachHeader
-
-            // Import status banner
-            if importCoordinator.isImporting {
-                importStatusBanner
+        HStack(spacing: 0) {
+            // Session sidebar
+            if showSessionList {
+                sessionSidebar
+                    .frame(width: 220)
+                Divider()
             }
 
-            Divider()
-
-            // Messages
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: AppSpacing.md) {
-                        if messages.isEmpty {
-                            welcomeView
-                        }
-
-                        ForEach(messages) { message in
-                            ChatMessageBubble(message: message, showDataBasis: $showDataBasis)
-                        }
-
-                        if isLoading {
-                            HStack {
-                                ProgressView()
-                                    .padding()
-                                Text("分析中...")
-                                    .font(AppTypography.caption)
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                            }
-                        }
-
-                        if let error = errorMessage {
-                            Text(error)
-                                .font(AppTypography.caption)
-                                .foregroundColor(.red)
-                                .padding()
-                        }
-                    }
-                    .padding()
-                }
-                .onChange(of: messages.count) { _ in
-                    if let last = messages.last {
-                        proxy.scrollTo(last.id, anchor: .bottom)
-                    }
-                }
+            // Main chat area
+            VStack(spacing: 0) {
+                coachHeader
+                if importCoordinator.isImporting { importBanner }
+                Divider()
+                messagesList
+                Divider()
+                quickQuestionsBar
+                inputBar
             }
-
-            Divider()
-
-            // Quick questions
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: AppSpacing.sm) {
-                    ForEach(quickQuestions, id: \.self) { question in
-                        Button(question) {
-                            sendMessage(question)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-                }
-                .padding(.horizontal)
-                .padding(.vertical, 8)
-            }
-
-            // Input bar
-            HStack(spacing: AppSpacing.md) {
-                TextField("输入问题...", text: $inputText)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { sendMessage(inputText) }
-
-                Button(action: { sendMessage(inputText) }) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
-                }
-                .buttonStyle(.plain)
-                .disabled(inputText.trimmingCharacters(in: .whitespaces).isEmpty || isLoading)
-            }
-            .padding()
         }
         .navigationTitle("AI 教练")
         .task {
@@ -124,379 +50,374 @@ struct AICoachView: View {
             runtimeStatus = await AIRuntimeStatus.current(dataSource: healthStore.dataSource, summaries: healthStore.dailySummaries)
         }
         .onChange(of: healthStore.dataSource) { _ in
-            Task {
-                runtimeStatus = await AIRuntimeStatus.current(dataSource: healthStore.dataSource, summaries: healthStore.dailySummaries)
-            }
+            Task { runtimeStatus = await AIRuntimeStatus.current(dataSource: healthStore.dataSource, summaries: healthStore.dailySummaries) }
         }
+    }
+
+    // MARK: - Session Sidebar
+
+    private var sessionSidebar: some View {
+        VStack(spacing: 0) {
+            // New chat button
+            Button(action: {
+                Task {
+                    let range = healthStore.dailySummaries.map(\.date).min().map { s in (s, Date()) } ?? (nil, nil)
+                    chatStore.createNewSession(runtime: runtimeStatus, dataRange: (range.0, range.1))
+                }
+            }) {
+                Label("New Chat", systemImage: "plus")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .padding(10)
+
+            Divider()
+
+            // Session list
+            List(selection: Binding<UUID?>(
+                get: { chatStore.activeSession?.id },
+                set: { id in
+                    if let id, let s = chatStore.sessions.first(where: { $0.id == id }) {
+                        chatStore.selectSession(s)
+                    }
+                }
+            )) {
+                ForEach(chatStore.sessions) { session in
+                    HStack(spacing: 6) {
+                        if session.isPinned { Image(systemName: "pin.fill").font(.caption2).foregroundColor(.orange) }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(session.title).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                            Text(session.updatedAt, style: .relative).font(.system(size: 10)).foregroundColor(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(.vertical, 2)
+                    .contextMenu {
+                        Button("Pin") { chatStore.togglePin(session) }
+                        Button("Rename") { /* sheet */ }
+                        Button("Archive", role: .destructive) { chatStore.archiveSession(session) }
+                        Button("Delete", role: .destructive) { withConfirmation { chatStore.deleteSession(session) } }
+                    }
+                    .tag(session.id)
+                }
+            }
+            .listStyle(.plain)
+
+            Divider()
+
+            // Session actions
+            HStack(spacing: 8) {
+                Button(action: { chatStore.clearActiveSession() }) {
+                    Image(systemName: "eraser").font(.caption)
+                }
+                .help("Clear current chat")
+                .buttonStyle(.plain)
+
+                Button(action: { exportChat() }) {
+                    Image(systemName: "square.and.arrow.up").font(.caption)
+                }
+                .help("Export chat")
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Text("\(chatStore.sessions.count) chats")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+        }
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.3))
     }
 
     // MARK: - Header
 
     private var coachHeader: some View {
         HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("AI Coach")
-                    .font(AppTypography.largeTitle)
-                HStack(spacing: AppSpacing.sm) {
-                    Text("Sovereign health analysis assistant")
-                        .font(AppTypography.caption)
-                        .foregroundColor(.secondary)
-
-                    Text("·")
-                        .foregroundColor(.secondary)
-
-                    // Data
-                    HStack(spacing: 4) {
-                        Circle().fill(dataSourceColor).frame(width: 5, height: 5)
-                        Text(dataSourceLabel)
-                            .font(AppTypography.caption2)
-                            .foregroundColor(.secondary)
-                    }
-
-                    Text("·")
-                        .foregroundColor(.secondary)
-
-                    // Model
-                    HStack(spacing: 4) {
-                        Circle().fill(aiModeColor).frame(width: 5, height: 5)
-                        Text(runtimeStatus.providerMode.shortLabel)
-                            .font(AppTypography.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                }
+            Button(action: { withAnimation { showSessionList.toggle() } }) {
+                Image(systemName: "sidebar.left").font(.title3)
             }
-            Spacer()
-
-            Toggle("DeepSeek", isOn: $useDeepSeek)
-                .toggleStyle(.switch)
-                .onChange(of: useDeepSeek) { newValue in
-                    UserDefaults.standard.set(newValue, forKey: "deepseek_enabled")
-                    Task { await updateAIMode() }
-                }
-        }
-        .padding()
-    }
-
-    // MARK: - Import Status Banner
-
-    private var importStatusBanner: some View {
-        HStack(spacing: 8) {
-            ProgressView()
-                .scaleEffect(0.7)
-                .frame(width: 16, height: 16)
+            .buttonStyle(.plain)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Importing Apple Health data")
-                    .font(AppTypography.caption.weight(.medium))
-                Text("\(importCoordinator.progress.formattedProcessedSize) / \(importCoordinator.progress.formattedTotalSize) · \(importCoordinator.progress.percentComplete)% · \(importCoordinator.progress.formattedETA) remaining")
-                    .font(AppTypography.caption2)
-                    .foregroundColor(.secondary)
+                Text(chatStore.activeSession?.title ?? "AI Coach")
+                    .font(AppTypography.title3)
+                HStack(spacing: 6) {
+                    Circle().fill(dataSourceColor).frame(width: 5, height: 5)
+                    Text(dataSourceLabel).font(.system(size: 11))
+                    Text("·").foregroundColor(.secondary)
+                    HStack(spacing: 4) {
+                        Circle().fill(aiModeColor).frame(width: 5, height: 5)
+                        Text(aiMode).font(.system(size: 11))
+                    }
+                }
+                .foregroundColor(.secondary)
             }
+            Spacer()
+            Toggle("DeepSeek", isOn: $useDeepSeek).toggleStyle(.switch)
+                .onChange(of: useDeepSeek) { v in UserDefaults.standard.set(v, forKey: "deepseek_enabled"); Task { await updateAIMode() } }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
 
+    // MARK: - Import banner
+
+    private var importBanner: some View {
+        HStack(spacing: 6) {
+            ProgressView().scaleEffect(0.6).frame(width: 12, height: 12)
+            Text("Importing \(importCoordinator.progress.formattedProcessedSize) / \(importCoordinator.progress.formattedTotalSize) · \(importCoordinator.progress.percentComplete)%")
+                .font(.system(size: 11))
             Spacer()
         }
         .padding(.horizontal)
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
         .background(Color.accentColor.opacity(0.06))
     }
 
-    // MARK: - Welcome View
+    // MARK: - Messages
+
+    private var messagesList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: AppSpacing.md) {
+                    if chatStore.activeMessages.isEmpty {
+                        welcomeView
+                    }
+                    ForEach(chatStore.activeMessages, id: \.id) { msg in
+                        MessageBubbleView(message: msg, showDataBasis: $showDataBasis)
+                            .contextMenu {
+                                Button("Copy") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(msg.contentMarkdown, forType: .string)
+                                }
+                                Button("Delete", role: .destructive) {
+                                    chatStore.deleteMessage(msg)
+                                }
+                            }
+                    }
+                    if isLoading {
+                        HStack { ProgressView().padding(); Text("分析中...").font(.caption).foregroundColor(.secondary); Spacer() }
+                    }
+                    if let err = errorMessage {
+                        Text(err).font(.caption).foregroundColor(.red).padding()
+                    }
+                }
+                .padding()
+            }
+            .onChange(of: chatStore.activeMessages.count) { _ in
+                if let last = chatStore.activeMessages.last { proxy.scrollTo(last.id, anchor: .bottom) }
+            }
+        }
+    }
+
+    // MARK: - Welcome
 
     private var welcomeView: some View {
         VStack(spacing: AppSpacing.lg) {
-            Image(systemName: "brain.head.profile")
-                .font(.system(size: 48))
-                .foregroundColor(.accentColor)
-
-            Text("你好！我是 Sovereign 里的 AI 健康教练")
-                .font(AppTypography.title2)
-
-            VStack(spacing: 6) {
-                welcomeStatusText
-            }
-            .frame(maxWidth: 420)
-
-            if !runtimeStatus.isCloudAIEnabled {
-                VStack(spacing: 4) {
-                    if !useDeepSeek {
-                        Text("当前使用本地规则引擎。")
-                            .font(AppTypography.caption)
-                            .foregroundColor(.secondary)
-                        Text("开启上方的 DeepSeek 开关并配置 API Key，可获得更智能的云端分析。")
-                            .font(AppTypography.caption)
-                            .foregroundColor(.secondary)
-                    } else if !hasAPIKeyConfigured {
-                        Text("DeepSeek 已开启但未配置 API Key。")
-                            .font(AppTypography.caption)
-                            .foregroundColor(.secondary)
-                        Text("请在设置 → AI 设置中保存你的 API Key。")
-                            .font(AppTypography.caption)
-                            .foregroundColor(.secondary)
-                    }
+            Image(systemName: "brain.head.profile").font(.system(size: 40)).foregroundColor(.accentColor)
+            Text("你好！我是 Sovereign 里的 AI 健康教练").font(AppTypography.title2)
+            VStack(spacing: 4) {
+                if !runtimeStatus.hasRealHealthData && healthStore.dataSource == .empty {
+                    Text("你的健康数据库目前为空。导入 Apple Health 数据后，我可以帮你分析趋势、评估恢复状态。")
+                } else if runtimeStatus.hasRealHealthData {
+                    Text("基于 \(healthStore.dataSource.rawValue) 数据 (\(healthStore.dbSummaryCount) 天)。当前后端: \(runtimeStatus.providerMode.shortLabel)。")
+                } else {
+                    Text("当前使用 Demo 数据演示。后端: \(runtimeStatus.providerMode.label)。")
                 }
-                .multilineTextAlignment(.center)
-                .padding()
-                .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+            }
+            .font(.callout).foregroundColor(.secondary).multilineTextAlignment(.center).frame(maxWidth: 400)
+            if !runtimeStatus.isCloudAIEnabled {
+                Text(!useDeepSeek ? "当前使用本地规则引擎。开启 DeepSeek 并配置 API Key 可获得更智能的分析。" : "DeepSeek 已开启但未配置 API Key。请在 Settings → AI 设置中保存 Key。")
+                    .font(.caption).foregroundColor(.secondary).padding().background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
             }
         }
-        .frame(maxWidth: 450)
-        .padding(.vertical, 40)
+        .frame(maxWidth: 420).padding(.vertical, 40)
     }
 
-    private var welcomeStatusText: Text {
-        let status = runtimeStatus
+    // MARK: - Quick Questions
 
-        if !status.hasRealHealthData && healthStore.dataSource == .empty {
-            return Text("你的健康数据库目前为空。导入 Apple Health 数据后，我可以帮你分析趋势、评估恢复状态、给出训练建议。")
-        } else if status.hasRealHealthData {
-            let modeText = status.providerMode.isCloud ? "DeepSeek V4 (\(status.modelName ?? "unknown"))" : "本地规则引擎"
-            if let range = status.dataDateRange {
-                return Text("基于 \(status.dataSource.rawValue) 数据分析。当前后端: \(modeText)。数据范围: \(range.lowerBound.formatted(date: .numeric, time: .omitted)) 至 \(range.upperBound.formatted(date: .numeric, time: .omitted))。")
-            }
-            return Text("基于 \(status.dataSource.rawValue) 数据分析。当前后端: \(modeText)。")
-        } else {
-            return Text("当前使用 Demo 数据演示。后端: \(status.providerMode.label)。真实数据导入后会替换。")
+    private var quickQuestionsBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(quickQuestions, id: \.self) { q in
+                    Button(q) { sendMessage(q) }.buttonStyle(.bordered).controlSize(.small)
+                }
+            }.padding(.horizontal).padding(.vertical, 6)
         }
     }
 
-    // MARK: - Send Message
+    // MARK: - Input
+
+    private var inputBar: some View {
+        HStack(spacing: AppSpacing.md) {
+            TextField("输入问题...", text: $inputText).textFieldStyle(.roundedBorder).onSubmit { sendMessage(inputText) }
+            Button(action: { sendMessage(inputText) }) {
+                Image(systemName: "arrow.up.circle.fill").font(.title2)
+            }
+            .buttonStyle(.plain)
+            .disabled(inputText.trimmingCharacters(in: .whitespaces).isEmpty || isLoading)
+        }.padding(.horizontal).padding(.bottom, 10)
+    }
+
+    // MARK: - Send
 
     private func sendMessage(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, !isLoading else { return }
+        inputText = ""; errorMessage = nil
 
-        inputText = ""
-        errorMessage = nil
+        // Ensure active session
+        if chatStore.activeSession == nil {
+            chatStore.createNewSession(runtime: runtimeStatus)
+        }
 
-        let userMessage = ChatMessage(role: .user, content: trimmed)
-        messages.append(userMessage)
+        chatStore.appendUserMessage(trimmed)
 
-        // Check if it's an identity/role question — handle locally
+        // Identity question → local
         if isIdentityQuestion(trimmed) {
-            messages.append(ChatMessage(
-                role: .assistant,
-                content: buildIdentityResponse(),
-                contextSummary: "身份说明 · \(runtimeStatus.providerMode.shortLabel)",
-                isFallback: false
-            ))
+            let answer = buildIdentityResponse()
+            chatStore.appendAssistantMessage(markdown: answer, runtime: runtimeStatus, evidence: "身份说明 · \(runtimeStatus.providerMode.shortLabel)")
             return
         }
 
         Task {
-            isLoading = true
-            defer { isLoading = false }
-
-            // Safety check
+            isLoading = true; defer { isLoading = false }
             let safetyResult = safetyGuard.check(trimmed)
             if !safetyResult.isSafe, let warning = safetyResult.warningMessage {
-                messages.append(ChatMessage(
-                    role: .assistant,
-                    content: warning,
-                    contextSummary: "安全拦截",
-                    isFallback: true
-                ))
+                chatStore.appendFallbackMessage(markdown: warning, evidence: "安全拦截")
                 return
             }
-
-            // Try DeepSeek if enabled
             if runtimeStatus.isCloudAIEnabled {
                 await updateAIMode(to: "DeepSeek V4")
                 do {
-                    let context = HealthContextBuilder.build(
-                        summaries: healthStore.dailySummaries,
-                        workouts: healthStore.recentWorkouts,
-                        sleepSessions: healthStore.recentSleep,
-                        insights: healthStore.healthInsights,
-                        dataSource: healthStore.dataSource
-                    )
-
+                    let context = HealthContextBuilder.build(summaries: healthStore.dailySummaries, workouts: healthStore.recentWorkouts, sleepSessions: healthStore.recentSleep, insights: healthStore.healthInsights, dataSource: healthStore.dataSource)
                     let modelBuilder = PersonalHealthModelBuilder()
                     let healthModel = modelBuilder.build(summaries: healthStore.dailySummaries, workouts: healthStore.recentWorkouts, sleep: healthStore.recentSleep)
                     let forecast = ForecastEngine().forecast(from: healthModel)
                     let prescription = ExercisePrescriptionEngine().prescribe(from: healthModel)
-
-                    let prompt = HealthPromptBuilder.buildUserPrompt(
-                        question: trimmed,
-                        context: context,
-                        runtime: runtimeStatus,
-                        healthModel: healthModel,
-                        forecast: forecast,
-                        prescription: prescription
-                    )
-                    let response = try await DeepSeekClient.shared.chat(
-                        systemPrompt: HealthPromptBuilder.systemPrompt(for: runtimeStatus),
-                        userMessage: prompt
-                    )
-
-                    let contextSummary = buildContextSummary(context: context)
-                    messages.append(ChatMessage(
-                        role: .assistant,
-                        content: response,
-                        contextSummary: contextSummary,
-                        isFallback: false
-                    ))
+                    let prompt = HealthPromptBuilder.buildUserPrompt(question: trimmed, context: context, runtime: runtimeStatus, healthModel: healthModel, forecast: forecast, prescription: prescription)
+                    let response = try await DeepSeekClient.shared.chat(systemPrompt: HealthPromptBuilder.systemPrompt(for: runtimeStatus), userMessage: prompt)
+                    let evidence = "DeepSeek V4 · \(context.dataQuality.dateRangeStart) – \(context.dataQuality.dateRangeEnd)" + (context.isMockData ? " · Demo" : "")
+                    chatStore.appendAssistantMessage(markdown: response, runtime: runtimeStatus, evidence: evidence)
                     return
                 } catch {
                     await updateAIMode(to: "Fallback (Local Rules)")
-                    messages.append(ChatMessage(
-                        role: .system,
-                        content: "DeepSeek 请求失败 (\(error.localizedDescription))，已切换本地规则引擎。",
-                        timestamp: Date()
-                    ))
+                    chatStore.appendSystemMessage("DeepSeek 请求失败 (\(error.localizedDescription))，已切换本地规则引擎。")
                 }
             }
-
-            // Local rules fallback
             await updateAIMode(to: "Local Rules")
-            let stream = await localRules.analyze(
-                question: trimmed,
-                summaries: healthStore.dailySummaries,
-                workouts: healthStore.recentWorkouts,
-                sleepSessions: healthStore.recentSleep
-            )
-
-            for await message in stream {
-                messages.append(message)
+            let stream = await localRules.analyze(question: trimmed, summaries: healthStore.dailySummaries, workouts: healthStore.recentWorkouts, sleepSessions: healthStore.recentSleep)
+            for await msg in stream {
+                chatStore.appendAssistantMessage(markdown: msg.content, runtime: runtimeStatus, evidence: msg.contextSummary)
             }
         }
     }
 
-    // MARK: - Identity Handling
+    // MARK: - Identity
 
     private func isIdentityQuestion(_ text: String) -> Bool {
-        let lowercased = text.lowercased()
-        let patterns = [
-            "你是谁", "你是什么", "deepseek", "你是deepseek",
-            "你用什么模型", "你的模型", "什么模型", "哪个模型",
-            "你是ai", "你是人工智能", "你是本地", "你是云端",
-            "你的后端", "你用什么后端", "你怎么工作", "你能做什么",
-            "你是什么ai", "介绍一下你自己", "你是谁开发的",
-        ]
-        return patterns.contains { lowercased.contains($0) }
+        ["你是谁", "你是什么", "deepseek", "你是deepseek", "你用什么模型", "什么模型", "哪个模型", "你的后端", "介绍一下你自己", "你是医生吗", "你能做什么"].contains { text.lowercased().contains($0) }
     }
 
     private func buildIdentityResponse() -> String {
-        let status = runtimeStatus
-        var parts: [String] = []
-
-        parts.append("我是 Sovereign App 里的 AI 健康教练与运动恢复分析师。")
-
-        if status.providerMode.isCloud {
-            parts.append("我当前的语言模型后端是 DeepSeek V4（模型名：\(status.modelName ?? "deepseek-v4-pro")），云端 API 地址为 \(status.baseURL ?? "https://api.deepseek.com")。")
-            parts.append("DeepSeek 是我的语言模型提供商，不是我本身。我运行在 Sovereign App 里，专门做健康数据分析。")
-        } else if case .localRules = status.providerMode {
-            if !useDeepSeek {
-                parts.append("当前没有启用 DeepSeek，我使用本地规则引擎。这意味着我的回答能力更保守、更有限。你可以在 Settings 里开启 DeepSeek 并配置 API Key 以启用更智能的云端分析。")
-            } else {
-                parts.append("DeepSeek 已开启但未配置 API Key，当前使用本地规则引擎。请在 Settings → AI 设置中保存你的 API Key。")
-            }
-        } else if case .fallback(let reason) = status.providerMode {
-            parts.append("当前由于「\(reason)」已降级为本地规则引擎。")
+        var p: [String] = ["我是 **Sovereign App 里的 AI 健康教练与运动恢复分析师**。"]
+        if runtimeStatus.providerMode.isCloud {
+            p.append("当前语言模型后端是 **DeepSeek V4**（模型 \(runtimeStatus.modelName ?? "deepseek-v4-pro")）。DeepSeek 是我的后端，不是我本身。")
+        } else {
+            p.append("当前使用**本地规则引擎**。你可以在 Settings 中开启 DeepSeek 并配置 API Key 以启用云端分析。")
         }
-
-        if !status.hasRealHealthData {
-            parts.append("你还没有导入 Apple Health 数据，所以我不能基于真实身体数据做分析。请先在「数据导入」页面导入数据。")
-        } else if let range = status.dataDateRange {
-            parts.append("你的健康数据范围是 \(range.lowerBound.formatted(date: .numeric, time: .omitted)) 至 \(range.upperBound.formatted(date: .numeric, time: .omitted))，数据来源为 \(status.dataSource.rawValue)。")
-        }
-
-        parts.append("我不是通用聊天机器人。我的任务是帮你理解健康趋势、睡眠、恢复、活动量和训练负荷。")
-        parts.append("我不是医生，不能做医疗诊断。所有建议仅供个人参考。")
-
-        return parts.joined(separator: "\n\n")
+        if !runtimeStatus.hasRealHealthData { p.append("目前没有真实 Apple Health 数据，无法做个性化分析。") }
+        p.append("我不是医生，不能做医疗诊断或开药。我的任务是帮你理解健康趋势、恢复状态、训练负荷和活动模式。")
+        return p.joined(separator: "\n\n")
     }
 
     // MARK: - Helpers
 
-    private func buildContextSummary(context: HealthContext) -> String {
-        var parts: [String] = []
-        parts.append("基于 DeepSeek V4")
-        parts.append("数据范围: \(context.dataQuality.dateRangeStart) 至 \(context.dataQuality.dateRangeEnd)")
-        if context.isMockData {
-            parts.append("⚠️ Demo 数据")
-        } else {
-            parts.append("真实数据")
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    private func checkAPIKey() async {
-        hasAPIKeyConfigured = ((try? await resolveAPIKey()) != nil)
-    }
-
-    private func updateAIMode(to mode: String? = nil) async {
-        if let mode = mode {
-            aiMode = mode
-        } else {
-            let status = runtimeStatus
-            aiMode = status.providerMode.label
+    private func exportChat() {
+        let md = chatStore.exportActiveSession()
+        let savePanel = NSSavePanel()
+        savePanel.title = "Export Chat"
+        savePanel.nameFieldStringValue = "Sovereign Chat \(Date().formatted(date: .numeric, time: .omitted)).md"
+        savePanel.allowedContentTypes = [.plainText]
+        savePanel.begin { response in
+            if response == .OK, let url = savePanel.url {
+                try? md.write(to: url, atomically: true, encoding: .utf8)
+            }
         }
     }
 
-    private var aiModeColor: Color {
-        if aiMode.contains("Local Rules") { return .blue }
-        if aiMode.contains("DeepSeek") { return .purple }
-        if aiMode.contains("Fallback") { return .orange }
-        return .gray
+    private func withConfirmation(_ action: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "确认删除？"
+        alert.informativeText = "此操作不可撤销。"
+        alert.addButton(withTitle: "删除")
+        alert.addButton(withTitle: "取消")
+        if alert.runModal() == .alertFirstButtonReturn { action() }
     }
 
-    private var dataSourceColor: Color {
-        switch healthStore.dataSource {
-        case .empty: return .gray
-        case .mockLive: return .orange
-        case .appleHealthImport: return .green
-        default: return .gray
-        }
-    }
-
-    private var dataSourceLabel: String {
-        switch healthStore.dataSource {
-        case .empty: return "No Data"
-        case .mockLive: return "Demo"
-        case .appleHealthImport: return "Apple Health"
-        default: return healthStore.dataSource.rawValue
-        }
-    }
+    private func checkAPIKey() async { hasAPIKeyConfigured = (try? await resolveAPIKey()) != nil }
+    private func updateAIMode(to mode: String? = nil) async { aiMode = mode ?? runtimeStatus.providerMode.label }
+    private var aiModeColor: Color { aiMode.contains("Local") ? .blue : aiMode.contains("DeepSeek") ? .purple : aiMode.contains("Fallback") ? .orange : .gray }
+    private var dataSourceColor: Color { healthStore.dataSource == .appleHealthImport ? .green : healthStore.dataSource == .mockLive ? .orange : .gray }
+    private var dataSourceLabel: String { healthStore.dataSource == .empty ? "No Data" : healthStore.dataSource == .mockLive ? "Demo" : "Apple Health" }
 }
 
-// MARK: - Data Source Badge
+// MARK: - Markdown Message Bubble
 
-struct DataSourceBadge: View {
-    let source: DataSource
+struct MessageBubbleView: View {
+    let message: ChatMessageRecord
+    @Binding var showDataBasis: UUID?
+
+    private var attributedContent: AttributedString {
+        (try? AttributedString(markdown: message.contentMarkdown, options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(message.contentPlainText)
+    }
 
     var body: some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(badgeColor)
-                .frame(width: 6, height: 6)
-            Text(badgeText)
-                .font(AppTypography.caption2)
-                .foregroundColor(badgeColor)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(badgeColor.opacity(0.1), in: Capsule())
-    }
+        HStack(alignment: .top) {
+            if message.role != "user" {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(attributedContent)
+                        .font(.callout)
+                        .padding(10)
+                        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.08), lineWidth: 0.5))
+                        .textSelection(.enabled)
 
-    private var badgeColor: Color {
-        switch source {
-        case .empty: return .gray
-        case .mockLive: return .orange
-        case .appleHealthImport: return .green
-        case .iphoneSync: return .blue
-        case .watchLive: return .purple
-        case .unknown: return .gray
-        }
-    }
+                    // Evidence toggle
+                    if let evidence = message.contextSummary, !evidence.isEmpty {
+                        Button(action: { showDataBasis = showDataBasis == message.id ? nil : message.id }) {
+                            HStack(spacing: 3) {
+                                Image(systemName: showDataBasis == message.id ? "chevron.up" : "info.circle").font(.caption2)
+                                Text(showDataBasis == message.id ? "收起" : "数据依据").font(.caption2)
+                            }.foregroundColor(.secondary).padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Color.secondary.opacity(0.06), in: Capsule())
+                        }.buttonStyle(.plain)
 
-    private var badgeText: String {
-        switch source {
-        case .empty: return "无数据"
-        case .mockLive: return "Demo Data"
-        case .appleHealthImport: return "Apple Health"
-        case .iphoneSync: return "iPhone"
-        case .watchLive: return "Watch"
-        case .unknown: return "未知"
+                        if showDataBasis == message.id {
+                            Text(evidence).font(.caption2).foregroundColor(.secondary).padding(6)
+                                .background(Color.secondary.opacity(0.03), in: RoundedRectangle(cornerRadius: 5))
+                        }
+                    }
+                    Text(message.createdAt, style: .time).font(.caption2).foregroundColor(.secondary.opacity(0.5))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Spacer()
+            } else {
+                Spacer()
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(attributedContent)
+                        .font(.callout).foregroundColor(.white)
+                        .padding(10).background(Color.accentColor, in: RoundedRectangle(cornerRadius: 10))
+                        .textSelection(.enabled)
+                    Text(message.createdAt, style: .time).font(.caption2).foregroundColor(.secondary.opacity(0.5))
+                }
+            }
         }
+        .padding(.horizontal, 2)
+        .id(message.id)
     }
 }
