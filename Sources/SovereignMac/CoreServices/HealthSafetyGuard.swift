@@ -17,53 +17,44 @@ enum SafetyCategory: String, CaseIterable {
     case syncope = "晕厥"
     case breathingDifficulty = "呼吸困难"
     case severePalpitations = "严重心悸"
-    case abnormallyHighHR = "心率异常很高"
     case severeInjury = "严重受伤"
     case suddenHeadache = "突然剧烈头痛"
     case selfHarm = "自残"
     case suicide = "自杀"
-    case extremeWeightLoss = "极端减脂"
-    case overtraining = "过度训练"
     case medicationDosage = "药物剂量"
-    case medicalDiagnosis = "医疗诊断请求"
+    case medicalDiagnosis = "明确医疗诊断请求"
 }
 
+/// HealthSafetyGuard only blocks HIGH-RISK content that genuinely needs medical attention.
+/// Normal training, sleep, fatigue, weight loss questions are NOT blocked — they get data-driven analysis.
 struct HealthSafetyGuard {
-    private static let safetyKeywords: [SafetyCategory: [String]] = [
-        .chestPain: ["胸痛", "胸口疼", "心口痛", "chest pain", "心绞痛"],
-        .syncope: ["晕厥", "晕倒", "昏倒", "syncope", "fainting", "失去意识", "昏厥"],
-        .breathingDifficulty: ["呼吸困难", "喘不上气", "窒息", "shortness of breath", "breathing difficulty"],
-        .severePalpitations: ["心悸", "心跳过快", "心慌", "严重心慌", "palpitations"],
-        .abnormallyHighHR: ["心率超过200", "心率超过180", "心率异常高"],
-        .severeInjury: ["重伤", "骨折", "大出血", "severe injury", "严重受伤"],
-        .suddenHeadache: ["剧烈头痛", "突然头痛", "雷击样头痛", "thunderclap headache"],
-        .selfHarm: ["自残", "割腕", "self harm", "伤害自己"],
-        .suicide: ["自杀", "想死", "不想活", "suicide", "结束生命", "寻死"],
-        .extremeWeightLoss: ["极端减脂", "暴瘦", "绝食", "催吐", "厌食"],
-        .overtraining: ["过度训练到受伤", "训练到吐血", "每天训练6小时"],
-        .medicationDosage: ["药量", "剂量", "吃什么药", "开药", "处方", "降压药", "该吃多少"],
-        .medicalDiagnosis: ["诊断", "是不是得了", "什么病", "会不会是", "disease", "diagnose"],
+
+    // Only truly high-risk keywords — does NOT include normal training/fatigue/diet questions
+    private static let highRiskKeywords: [SafetyCategory: [String]] = [
+        .chestPain: ["胸痛", "胸口疼", "心口痛", "chest pain", "心绞痛", "胸口闷痛"],
+        .syncope: ["晕厥", "晕倒", "昏倒", "syncope", "fainting", "失去意识", "昏厥", "突然晕"],
+        .breathingDifficulty: ["呼吸困难", "喘不上气", "窒息", "shortness of breath", "breathing difficulty", "喘不过气"],
+        .severePalpitations: ["严重心悸", "心跳过速", "心跳200", "心跳异常快", "心慌到不行"],
+        .severeInjury: ["重伤", "骨折", "大出血", "severe injury", "严重受伤", "断骨"],
+        .suddenHeadache: ["剧烈头痛", "突然剧烈头痛", "雷击样头痛", "thunderclap headache", "头痛欲裂"],
+        .selfHarm: ["自残", "割腕", "self harm", "伤害自己", "自伤"],
+        .suicide: ["自杀", "想死", "不想活", "suicide", "结束生命", "寻死", "不想活了"],
+        .medicationDosage: ["该吃多少药", "药量多少", "开什么药", "处方药", "降压药剂量", "吃什么药能治"],
+        .medicalDiagnosis: ["是不是得了心脏病", "是不是得了癌症", "诊断一下", "我得了什么病"],
     ]
 
-    private static let genericSafetyWarning = """
-        我不能根据 Apple Watch 数据为你做医疗诊断。你提到的情况可能需要专业判断。\
-        如果你正在经历胸痛、晕厥、严重呼吸困难、持续异常心率等情况，请尽快联系医生或急救服务。
+    private static let emergencyWarning = """
+        ⚠️ 你提到的情况可能涉及需要紧急医疗关注的健康问题。
 
-        我可以帮你分析健康数据中的趋势和模式，但这不能替代专业医疗意见。
-        """
+        我不能根据 Apple Watch 数据做医疗判断。如果你正经受胸痛、晕厥、严重呼吸困难、持续异常心率等症状，请立即联系医生或拨打急救电话。
 
-    private static let overtrainingWarning = """
-        你的训练强度显示可能存在过度训练风险。建议你：
-        1. 适当减少训练量和强度
-        2. 确保充足的睡眠和营养摄入
-        3. 关注身体的恢复信号
-        这不是医疗诊断。如果感到持续不适，请咨询运动医学专家。
+        Sovereign 只能分析健康数据中的趋势和模式，不能替代专业医疗意见。
         """
 
     func check(_ input: String) -> SafetyCheckResult {
         let lowercased = input.lowercased()
 
-        // Check highest-priority categories first
+        // Only check truly high-risk categories
         let priorityCategories: [SafetyCategory] = [
             .suicide, .selfHarm, .chestPain, .syncope,
             .breathingDifficulty, .severeInjury, .suddenHeadache,
@@ -71,32 +62,27 @@ struct HealthSafetyGuard {
 
         for category in priorityCategories {
             if matchesCategory(category, in: lowercased) {
-                return .blocked(category, message: Self.genericSafetyWarning)
+                return .blocked(category, message: Self.emergencyWarning)
             }
         }
 
-        // Check medium-priority
-        let mediumPriority: [SafetyCategory] = [
-            .severePalpitations, .abnormallyHighHR,
-            .medicationDosage, .medicalDiagnosis, .extremeWeightLoss,
+        // Medication and diagnosis — only if explicitly asking for medical advice
+        let secondaryCategories: [SafetyCategory] = [
+            .medicationDosage, .medicalDiagnosis,
         ]
 
-        for category in mediumPriority {
+        for category in secondaryCategories {
             if matchesCategory(category, in: lowercased) {
-                return .blocked(category, message: Self.genericSafetyWarning)
+                return .blocked(category, message: "我无法提供药物或医疗诊断建议。如果你有健康疑虑，建议咨询医生。我可以帮你分析健康数据趋势，但这不是医疗建议。")
             }
         }
 
-        // Overtraining - special handling with more specific advice
-        if matchesCategory(.overtraining, in: lowercased) {
-            return .blocked(.overtraining, message: Self.overtrainingWarning)
-        }
-
+        // Everything else is safe — training, sleep, fatigue, weight management, etc.
         return .safe
     }
 
     private func matchesCategory(_ category: SafetyCategory, in text: String) -> Bool {
-        guard let keywords = Self.safetyKeywords[category] else { return false }
+        guard let keywords = Self.highRiskKeywords[category] else { return false }
         return keywords.contains { text.contains($0.lowercased()) }
     }
 }

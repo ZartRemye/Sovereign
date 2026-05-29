@@ -14,8 +14,15 @@ final class MacHealthStore: ObservableObject {
     @Published var alerts: [AlertRecord] = []
     @Published var recoveryScores: [RecoveryScoreRecord] = []
     @Published var isLoading = false
-    @Published var dataSource: DataSource = .mockLive
+    @Published var dataSource: DataSource = .empty
     @Published var lastAnalysisDate: Date?
+    @Published var lastImportDiagnostic: ImportDiagnostic?
+
+    // Database counts for diagnostics
+    @Published var dbMetricCount: Int = 0
+    @Published var dbWorkoutCount: Int = 0
+    @Published var dbSleepCount: Int = 0
+    @Published var dbSummaryCount: Int = 0
 
     private var modelContext: ModelContext?
 
@@ -23,9 +30,44 @@ final class MacHealthStore: ObservableObject {
 
     func configure(with context: ModelContext) {
         self.modelContext = context
+        Task { await detectDataSource() }
     }
 
-    // MARK: - Load Mock Data
+    // MARK: - Data Source Detection
+
+    func detectDataSource() async {
+        guard let context = modelContext else { return }
+
+        let metricCount = (try? context.fetchCount(FetchDescriptor<HealthMetricSample>())) ?? 0
+        let workoutCount = (try? context.fetchCount(FetchDescriptor<WorkoutSession>())) ?? 0
+        let summaryCount = (try? context.fetchCount(FetchDescriptor<DailySummary>())) ?? 0
+
+        dbMetricCount = metricCount
+        dbWorkoutCount = workoutCount
+        dbSummaryCount = summaryCount
+
+        if metricCount == 0 && workoutCount == 0 && summaryCount == 0 {
+            dataSource = .empty
+        } else {
+            // Check if data is from import or mock (use string predicates to avoid enum limitation)
+            let importRaw = DataSource.appleHealthImport.rawValue
+            let importDescriptors = FetchDescriptor<HealthMetricSample>(predicate: #Predicate { $0.sourceRaw == importRaw })
+            let importCount = (try? context.fetchCount(importDescriptors)) ?? 0
+
+            if importCount > 0 {
+                dataSource = .appleHealthImport
+            } else {
+                let mockRaw = DataSource.mockLive.rawValue
+                let mockDescriptors = FetchDescriptor<HealthMetricSample>(predicate: #Predicate { $0.sourceRaw == mockRaw })
+                let mockCount = (try? context.fetchCount(mockDescriptors)) ?? 0
+                dataSource = mockCount > 0 ? .mockLive : .empty
+            }
+        }
+
+        await refresh()
+    }
+
+    // MARK: - Load Demo Data (explicit action only)
 
     func loadMockData() async {
         isLoading = true
@@ -36,13 +78,14 @@ final class MacHealthStore: ObservableObject {
 
         guard let context = modelContext else { return }
 
-        // Clear existing mock data
-        try? context.delete(model: HealthMetricSample.self)
-        try? context.delete(model: WorkoutSession.self)
-        try? context.delete(model: SleepSession.self)
-        try? context.delete(model: DailySummary.self)
+        // Don't clear real imported data — only clear mock data
+        let mockRaw = DataSource.mockLive.rawValue
+        try? context.delete(model: HealthMetricSample.self, where: #Predicate<HealthMetricSample> { $0.sourceRaw == mockRaw })
+        try? context.delete(model: WorkoutSession.self, where: #Predicate<WorkoutSession> { $0.sourceRaw == mockRaw })
+        try? context.delete(model: SleepSession.self, where: #Predicate<SleepSession> { $0.sourceRaw == mockRaw })
+        try? context.delete(model: DailySummary.self, where: #Predicate<DailySummary> { $0.sourceRaw == mockRaw })
 
-        // Insert new data
+        // Insert mock data
         for metric in mockData.metrics { context.insert(metric) }
         for workout in mockData.workouts { context.insert(workout) }
         for sleep in mockData.sleepSessions { context.insert(sleep) }
@@ -55,7 +98,46 @@ final class MacHealthStore: ObservableObject {
         recentSleep = mockData.sleepSessions.sorted { $0.startDate > $1.startDate }
     }
 
-    // MARK: - Import Health Data
+    // MARK: - Import Health Data (full pipeline)
+
+    func importHealthData(from url: URL, progress: @escaping (Double, String) -> Void) async throws -> DetailedImportResult {
+        guard let context = modelContext else {
+            throw ImportError(message: "数据库未初始化", underlyingError: nil)
+        }
+
+        let service = HealthImportService.shared
+        let result = try await service.importAndPersist(at: url, into: context, progress: progress)
+
+        dataSource = .appleHealthImport
+
+        // Save import diagnostic
+        let diagnostic = ImportDiagnostic(
+            fileName: result.fileName,
+            importTime: result.importTime,
+            success: result.success,
+            dateRangeStart: result.dateRangeStart,
+            dateRangeEnd: result.dateRangeEnd,
+            parsedByType: result.parsedByType,
+            savedByType: result.savedByType,
+            skippedReasons: result.skippedReasons,
+            totalMetricSamples: result.totalMetricSamples,
+            totalWorkouts: result.totalWorkouts,
+            totalSleepSessions: result.totalSleepSessions,
+            totalDailySummaries: result.totalDailySummaries,
+            errorMessage: result.parseError
+        )
+        context.insert(diagnostic)
+        try? context.save()
+        lastImportDiagnostic = diagnostic
+
+        // Refresh local state
+        await refresh()
+        await runLocalAnalysis()
+
+        return result
+    }
+
+    // MARK: - Legacy import (for backward compat)
 
     func importHealthData(metrics: [HealthMetricSample], workouts: [WorkoutSession],
                            sleep: [SleepSession], summaries: [DailySummary]) async {
@@ -97,6 +179,41 @@ final class MacHealthStore: ObservableObject {
         lastAnalysisDate = Date()
     }
 
+    // MARK: - Rebuild Daily Summaries
+
+    func rebuildDailySummaries() async {
+        guard let context = modelContext else { return }
+        isLoading = true
+        defer { isLoading = false }
+
+        let allMetrics = (try? context.fetch(FetchDescriptor<HealthMetricSample>())) ?? []
+        let allWorkouts = (try? context.fetch(FetchDescriptor<WorkoutSession>())) ?? []
+        let allSleep = (try? context.fetch(FetchDescriptor<SleepSession>())) ?? []
+
+        guard !allMetrics.isEmpty else { return }
+
+        let dates = allMetrics.map(\.date)
+        guard let startDate = dates.min(), let endDate = dates.max() else { return }
+
+        // Delete old summaries
+        try? context.delete(model: DailySummary.self)
+
+        let summaries = DailySummaryBuilder.buildAll(
+            from: startDate,
+            to: endDate,
+            metrics: allMetrics,
+            workouts: allWorkouts,
+            sleepSessions: allSleep
+        )
+
+        for summary in summaries {
+            context.insert(summary)
+        }
+        try? context.save()
+
+        dailySummaries = summaries.sorted { $0.date > $1.date }
+    }
+
     // MARK: - Refresh
 
     func refresh() async {
@@ -113,6 +230,20 @@ final class MacHealthStore: ObservableObject {
 
         let insightDescriptor = FetchDescriptor<HealthInsight>(sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
         healthInsights = (try? context.fetch(insightDescriptor)) ?? []
+
+        let alertDescriptor = FetchDescriptor<AlertRecord>(sortBy: [SortDescriptor(\.date, order: .reverse)])
+        alerts = (try? context.fetch(alertDescriptor)) ?? []
+
+        // Update counts
+        dbMetricCount = (try? context.fetchCount(FetchDescriptor<HealthMetricSample>())) ?? 0
+        dbWorkoutCount = (try? context.fetchCount(FetchDescriptor<WorkoutSession>())) ?? 0
+        dbSleepCount = (try? context.fetchCount(FetchDescriptor<SleepSession>())) ?? 0
+        dbSummaryCount = dailySummaries.count
+
+        // Load latest import diagnostic
+        var diagDescriptor = FetchDescriptor<ImportDiagnostic>(sortBy: [SortDescriptor(\.importTime, order: .reverse)])
+        diagDescriptor.fetchLimit = 1
+        lastImportDiagnostic = (try? context.fetch(diagDescriptor))?.first
     }
 
     // MARK: - Clear Data
@@ -126,13 +257,44 @@ final class MacHealthStore: ObservableObject {
         try? context.delete(model: HealthInsight.self)
         try? context.delete(model: AlertRecord.self)
         try? context.delete(model: AIAnalysisCache.self)
+        try? context.delete(model: ImportDiagnostic.self)
         try? context.save()
 
+        dataSource = .empty
         dailySummaries = []
         recentWorkouts = []
         recentSleep = []
         healthInsights = []
         alerts = []
+        dbMetricCount = 0
+        dbWorkoutCount = 0
+        dbSleepCount = 0
+        dbSummaryCount = 0
+        lastImportDiagnostic = nil
+    }
+
+    func clearDemoData() async {
+        guard let context = modelContext else { return }
+        let mockRaw = DataSource.mockLive.rawValue
+        try? context.delete(model: HealthMetricSample.self, where: #Predicate<HealthMetricSample> { $0.sourceRaw == mockRaw })
+        try? context.delete(model: WorkoutSession.self, where: #Predicate<WorkoutSession> { $0.sourceRaw == mockRaw })
+        try? context.delete(model: SleepSession.self, where: #Predicate<SleepSession> { $0.sourceRaw == mockRaw })
+        try? context.delete(model: DailySummary.self, where: #Predicate<DailySummary> { $0.sourceRaw == mockRaw })
+        try? context.save()
+        await detectDataSource()
+    }
+
+    func clearImportedData() async {
+        guard let context = modelContext else { return }
+        let importRaw = DataSource.appleHealthImport.rawValue
+        try? context.delete(model: HealthMetricSample.self, where: #Predicate<HealthMetricSample> { $0.sourceRaw == importRaw })
+        try? context.delete(model: WorkoutSession.self, where: #Predicate<WorkoutSession> { $0.sourceRaw == importRaw })
+        try? context.delete(model: SleepSession.self, where: #Predicate<SleepSession> { $0.sourceRaw == importRaw })
+        try? context.delete(model: DailySummary.self, where: #Predicate<DailySummary> { $0.sourceRaw == importRaw })
+        try? context.delete(model: ImportDiagnostic.self)
+        try? context.save()
+        lastImportDiagnostic = nil
+        await detectDataSource()
     }
 
     // MARK: - Today Summary
@@ -145,5 +307,19 @@ final class MacHealthStore: ObservableObject {
 
     var latestRecoveryScore: Double {
         todaySummary?.recoveryScore ?? dailySummaries.first?.recoveryScore ?? 0
+    }
+
+    // MARK: - Data Status
+
+    var hasRealData: Bool {
+        dataSource == .appleHealthImport
+    }
+
+    var hasAnyData: Bool {
+        dataSource != .empty
+    }
+
+    var isDemoData: Bool {
+        dataSource == .mockLive
     }
 }

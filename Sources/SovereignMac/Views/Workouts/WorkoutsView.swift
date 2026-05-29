@@ -268,10 +268,15 @@ struct WorkoutRow: View {
         case .running: return .orange
         case .walking: return .mint
         case .cycling: return .blue
-        case .strength: return .red
+        case .strength, .functionalStrength: return .red
         case .swimming: return .cyan
-        case .yoga: return .indigo
+        case .yoga, .pilates, .taiChi: return .indigo
         case .hiit: return .pink
+        case .hiking: return .green
+        case .crossTraining, .elliptical, .mixedCardio: return .teal
+        case .rowing: return .blue
+        case .stairClimbing: return .brown
+        case .dance: return .pink
         case .other: return .gray
         }
     }

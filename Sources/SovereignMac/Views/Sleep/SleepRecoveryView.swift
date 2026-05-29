@@ -14,7 +14,7 @@ struct SleepRecoveryView: View {
                     EmptyStateView(
                         systemImage: "moon.zzz.fill",
                         title: "暂无睡眠数据",
-                        message: "导入 Apple Health 数据或加载模拟数据以查看睡眠与恢复分析。"
+                        message: "导入 Apple Health 数据以查看睡眠与恢复分析。"
                     )
                 } else {
                     // Recovery score overview
@@ -26,7 +26,12 @@ struct SleepRecoveryView: View {
                     // Recovery factors
                     recoveryFactors
 
-                    // Today's suggestion
+                    // Sleep quality note
+                    if hasLowQualitySleepData {
+                        sleepQualityWarning
+                    }
+
+                    // Suggestion
                     todaySuggestion
                 }
             }
@@ -40,44 +45,41 @@ struct SleepRecoveryView: View {
     private var recoveryOverview: some View {
         GlassPanel {
             HStack(spacing: AppSpacing.xxl) {
-                // Score ring
                 ZStack {
                     Circle()
-                        .stroke(Color.secondary.opacity(0.15), lineWidth: 10)
-                        .frame(width: 120, height: 120)
+                        .stroke(Color.secondary.opacity(0.12), lineWidth: 8)
+                        .frame(width: 110, height: 110)
 
                     Circle()
-                        .trim(from: 0, to: healthStore.latestRecoveryScore / 100)
-                        .stroke(recoveryGradient, style: StrokeStyle(lineWidth: 10, lineCap: .round))
-                        .frame(width: 120, height: 120)
+                        .trim(from: 0, to: min(healthStore.latestRecoveryScore / 100, 1.0))
+                        .stroke(recoveryGradient, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                        .frame(width: 110, height: 110)
                         .rotationEffect(.degrees(-90))
 
                     VStack(spacing: 0) {
                         Text("\(String(format: "%.0f", healthStore.latestRecoveryScore))")
                             .font(AppTypography.scoreLarge)
                         Text("恢复评分")
-                            .font(AppTypography.caption)
+                            .font(AppTypography.caption2)
                             .foregroundColor(.secondary)
                     }
                 }
 
                 VStack(alignment: .leading, spacing: AppSpacing.md) {
-                    if let today = healthStore.todaySummary {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("恢复状态: \(recoveryLabel)")
-                                .font(AppTypography.title3)
-                            Text("基于睡眠、心率、训练负荷综合分析")
-                                .font(AppTypography.callout)
-                                .foregroundColor(.secondary)
-                        }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("恢复状态: \(recoveryLabel)")
+                            .font(AppTypography.title3)
+                        Text("基于睡眠、心率、训练负荷综合分析")
+                            .font(AppTypography.callout)
+                            .foregroundColor(.secondary)
+                    }
 
-                        Divider()
+                    Divider()
 
-                        HStack(spacing: AppSpacing.xl) {
-                            sleepRecoveryStat(icon: "moon.zzz.fill", label: "睡眠", value: today.sleepFormatted, color: .indigo)
-                            sleepRecoveryStat(icon: "heart.fill", label: "静息心率", value: "\(String(format: "%.0f", today.restingHeartRate)) bpm", color: .red)
-                            sleepRecoveryStat(icon: "chart.bar.fill", label: "训练负荷", value: "\(String(format: "%.0f", today.trainingLoad))", color: .blue)
-                        }
+                    HStack(spacing: AppSpacing.xl) {
+                        sleepRecoveryStat(icon: "moon.zzz.fill", label: "睡眠", value: todaySleepFormatted, color: .indigo)
+                        sleepRecoveryStat(icon: "heart.fill", label: "静息心率", value: todayHRFormatted, color: .red)
+                        sleepRecoveryStat(icon: "chart.bar.fill", label: "训练负荷", value: todayLoadFormatted, color: .blue)
                     }
                 }
             }
@@ -98,24 +100,46 @@ struct SleepRecoveryView: View {
                         .foregroundColor(.secondary)
                 } else {
                     ForEach(Array(recentSleep), id: \.id) { session in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(formatDate(session.startDate))
-                                    .font(AppTypography.callout)
-                                Text("\(formatTime(session.startDate)) - \(formatTime(session.endDate))")
-                                    .font(AppTypography.caption)
-                                    .foregroundColor(.secondary)
+                        VStack(spacing: 4) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(formatDate(session.startDate))
+                                        .font(AppTypography.callout)
+                                    Text("\(formatTime(session.startDate)) — \(formatTime(session.endDate))")
+                                        .font(AppTypography.caption)
+                                        .foregroundColor(.secondary)
+                                }
+
+                                Spacer()
+
+                                VStack(alignment: .trailing, spacing: 2) {
+                                    Text("睡眠 \(session.durationFormatted)")
+                                        .font(AppTypography.headline)
+                                    if session.deepSleepHours > 0 || session.remSleepHours > 0 {
+                                        Text("深睡 \(String(format: "%.1f", session.deepSleepHours))h · REM \(String(format: "%.1f", session.remSleepHours))h")
+                                            .font(AppTypography.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+
+                                if session.isInBedOnly {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundColor(.orange)
+                                        .font(.caption)
+                                        .help("只有 InBed 数据，无法区分睡眠阶段")
+                                }
                             }
 
-                            Spacer()
-
-                            Text(session.durationFormatted)
-                                .font(AppTypography.headline)
-
-                            if session.durationSeconds < 21600 {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundColor(.orange)
-                                    .font(.caption)
+                            // Sleep stage bar
+                            if session.durationSeconds > 0 {
+                                SleepStageBar(
+                                    deep: session.deepSleepSeconds / session.durationSeconds,
+                                    rem: session.remSleepSeconds / session.durationSeconds,
+                                    core: session.coreSleepSeconds / session.durationSeconds,
+                                    awake: session.awakeSeconds / session.durationSeconds,
+                                    hasRealStages: session.hasRealSleepStages
+                                )
+                                .frame(height: 6)
                             }
                         }
                         .padding(.vertical, 4)
@@ -140,6 +164,24 @@ struct SleepRecoveryView: View {
         }
     }
 
+    // MARK: - Sleep Quality Warning
+
+    private var sleepQualityWarning: some View {
+        CardView {
+            HStack(spacing: AppSpacing.sm) {
+                Image(systemName: "info.circle.fill")
+                    .foregroundColor(.orange)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("数据质量提示")
+                        .font(AppTypography.callout.weight(.medium))
+                    Text("当前睡眠数据仅包含「卧床时间」(InBed)，无法区分深度睡眠、REM 和清醒时间。睡眠时长可能被高估。建议使用支持睡眠阶段检测的设备以获得更准确的分析。")
+                        .font(AppTypography.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+    }
+
     // MARK: - Recovery Factors
 
     private var recoveryFactors: some View {
@@ -148,26 +190,10 @@ struct SleepRecoveryView: View {
                 Text("恢复因素分析")
                     .font(AppTypography.title3)
 
-                RecoveryFactorRow(
-                    label: "睡眠时长",
-                    value: sleepFactorValue,
-                    quality: sleepQuality
-                )
-                RecoveryFactorRow(
-                    label: "静息心率变化",
-                    value: hrFactorValue,
-                    quality: hrQuality
-                )
-                RecoveryFactorRow(
-                    label: "训练负荷",
-                    value: loadFactorValue,
-                    quality: loadQuality
-                )
-                RecoveryFactorRow(
-                    label: "心率变异性 (HRV)",
-                    value: hrvFactorValue,
-                    quality: hrvQuality
-                )
+                RecoveryFactorRow(label: "睡眠时长", value: sleepFactorValue, quality: sleepQuality)
+                RecoveryFactorRow(label: "静息心率变化", value: hrFactorValue, quality: hrQuality)
+                RecoveryFactorRow(label: "训练负荷", value: loadFactorValue, quality: loadQuality)
+                RecoveryFactorRow(label: "HRV", value: hrvFactorValue, quality: hrvQuality)
             }
         }
     }
@@ -190,13 +216,18 @@ struct SleepRecoveryView: View {
 
                 Text("此建议基于行为数据分析，不是医疗诊断。如有健康疑虑，请咨询医生。")
                     .font(AppTypography.caption2)
-                    .foregroundColor(.secondary.opacity(0.6))
+                    .foregroundColor(.secondary.opacity(0.5))
                     .padding(.top, 4)
             }
         }
     }
 
-    // MARK: - Helpers
+    // MARK: - Computed
+
+    private var hasLowQualitySleepData: Bool {
+        let recentSleep = healthStore.recentSleep.prefix(7)
+        return recentSleep.contains(where: { $0.isInBedOnly })
+    }
 
     private var recoveryLabel: String {
         let score = healthStore.latestRecoveryScore
@@ -210,10 +241,24 @@ struct SleepRecoveryView: View {
     }
 
     private var recoveryGradient: AngularGradient {
-        AngularGradient(
-            colors: [.green, .mint, .yellow, .orange, .red],
-            center: .center
-        )
+        AngularGradient(colors: [.green, .mint, .yellow, .orange, .red], center: .center)
+    }
+
+    private var todaySleepFormatted: String {
+        if let today = healthStore.todaySummary {
+            return today.sleepFormatted
+        }
+        return healthStore.recentSleep.first?.durationFormatted ?? "N/A"
+    }
+
+    private var todayHRFormatted: String {
+        guard let today = healthStore.todaySummary, today.restingHeartRate > 0 else { return "N/A" }
+        return "\(Int(today.restingHeartRate)) bpm"
+    }
+
+    private var todayLoadFormatted: String {
+        guard let today = healthStore.todaySummary else { return "N/A" }
+        return "\(Int(today.trainingLoad))"
     }
 
     private func sleepRecoveryStat(icon: String, label: String, value: String, color: Color) -> some View {
@@ -229,10 +274,10 @@ struct SleepRecoveryView: View {
     }
 
     private var sleepRegularity: String {
-        let sleepDurations = healthStore.recentSleep.prefix(7).map(\.durationSeconds)
-        guard sleepDurations.count >= 3 else { return "数据不足" }
-        let avg = sleepDurations.reduce(0, +) / Double(sleepDurations.count)
-        let variance = sleepDurations.map { abs($0 - avg) }.reduce(0, +) / Double(sleepDurations.count)
+        let durations = healthStore.recentSleep.prefix(7).map(\.durationSeconds)
+        guard durations.count >= 3 else { return "数据不足" }
+        let avg = durations.reduce(0, +) / Double(durations.count)
+        let variance = durations.map { abs($0 - avg) }.reduce(0, +) / Double(durations.count)
         if variance < 1800 { return "规律" }
         if variance < 3600 { return "较规律" }
         return "不规律"
@@ -246,43 +291,58 @@ struct SleepRecoveryView: View {
         }
     }
 
-    // Simplified factor values (in a real app these come from RecoveryAnalyzer)
-    private var sleepFactorValue: String { healthStore.recentSleep.first?.durationFormatted ?? "N/A" }
+    // Recovery factors
+    private var sleepFactorValue: String {
+        let recentSleep = healthStore.recentSleep.prefix(1)
+        guard let today = recentSleep.first else { return "N/A" }
+        return "\(today.durationFormatted)"
+    }
+
     private var sleepQuality: RecoveryFactorQuality {
         let duration = healthStore.recentSleep.first?.durationSeconds ?? 0
-        if duration >= 25200 { return .good }
+        if duration >= 28800 { return .good }
         if duration >= 21600 { return .moderate }
         return .poor
     }
 
     private var hrFactorValue: String {
-        guard let today = healthStore.todaySummary else { return "N/A" }
-        return "\(String(format: "%.0f", today.restingHeartRate)) bpm"
+        guard let today = healthStore.todaySummary, today.restingHeartRate > 0 else { return "N/A" }
+        return "\(Int(today.restingHeartRate)) bpm"
     }
     private var hrQuality: RecoveryFactorQuality { .moderate }
 
     private var loadFactorValue: String {
         guard let today = healthStore.todaySummary else { return "N/A" }
-        return "\(String(format: "%.0f", today.trainingLoad))"
+        return "\(Int(today.trainingLoad))"
     }
-    private var loadQuality: RecoveryFactorQuality { .moderate }
+    private var loadQuality: RecoveryFactorQuality {
+        let load = healthStore.todaySummary?.trainingLoad ?? 0
+        if load < 50 { return .good }
+        if load < 100 { return .moderate }
+        return .poor
+    }
 
     private var hrvFactorValue: String {
         guard let hrv = healthStore.todaySummary?.heartRateVariability else { return "N/A" }
-        return "\(String(format: "%.0f", hrv)) ms"
+        return "\(Int(hrv)) ms"
     }
-    private var hrvQuality: RecoveryFactorQuality { .moderate }
+    private var hrvQuality: RecoveryFactorQuality {
+        guard let hrv = healthStore.todaySummary?.heartRateVariability else { return .poor }
+        if hrv >= 40 { return .good }
+        if hrv >= 25 { return .moderate }
+        return .poor
+    }
 
     private var suggestionText: String {
         let score = healthStore.latestRecoveryScore
-        let sleepHours = (healthStore.recentSleep.first?.durationSeconds ?? 0) / 3600
+        let sleepHours = healthStore.todaySummary?.sleepHours ?? 0
 
         if score >= 70 {
-            return "你的恢复状态良好。继续维持当前作息和训练节奏。注意保证每天 \(String(format: "%.1f", max(sleepHours, 7))) 小时的睡眠。"
+            return "恢复状态良好。保持当前作息和训练节奏。注意保证每天 \(String(format: "%.1f", max(sleepHours, 7))) 小时的睡眠。"
         } else if score >= 40 {
             return "恢复状态一般。建议：1) 适当降低训练强度 2) 保证充足睡眠 3) 关注营养摄入。"
         } else {
-            return "恢复状态需要关注。强烈建议：1) 优先休息和睡眠 2) 避免高强度训练 3) 关注身体信号。如果持续感觉不适，请咨询医生。"
+            return "恢复状态需要关注。建议：1) 优先休息和睡眠 2) 避免高强度训练 3) 关注身体信号。如果持续感觉不适，请咨询医生。"
         }
     }
 
@@ -297,6 +357,32 @@ struct SleepRecoveryView: View {
         let f = DateFormatter()
         f.dateFormat = "HH:mm"
         return f.string(from: date)
+    }
+}
+
+// MARK: - Sleep Stage Bar
+
+struct SleepStageBar: View {
+    let deep: Double
+    let rem: Double
+    let core: Double
+    let awake: Double
+    let hasRealStages: Bool
+
+    var body: some View {
+        GeometryReader { geometry in
+            HStack(spacing: 0) {
+                if hasRealStages {
+                    Rectangle().fill(Color.indigo.opacity(0.7)).frame(width: max(0, deep * geometry.size.width))
+                    Rectangle().fill(Color.purple.opacity(0.5)).frame(width: max(0, rem * geometry.size.width))
+                    Rectangle().fill(Color.blue.opacity(0.3)).frame(width: max(0, core * geometry.size.width))
+                    Rectangle().fill(Color.orange.opacity(0.3)).frame(width: max(0, awake * geometry.size.width))
+                } else {
+                    Rectangle().fill(Color.indigo.opacity(0.3)).frame(width: geometry.size.width)
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 3))
     }
 }
 

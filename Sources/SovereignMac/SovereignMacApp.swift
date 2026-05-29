@@ -16,6 +16,7 @@ struct SovereignMacApp: App {
             HealthInsight.self,
             AlertRecord.self,
             AIAnalysisCache.self,
+            ImportDiagnostic.self,
         ])
         return try! ModelContainer(for: schema)
     }()
@@ -31,7 +32,14 @@ struct SovereignMacApp: App {
                     BackgroundAnalysisScheduler.shared.configure(store: healthStore)
                     BackgroundAnalysisScheduler.shared.start()
                     Task {
-                        await healthStore.loadMockData()
+                        await healthStore.refresh()
+                        // Only load mock data if no real data exists AND user hasn't explicitly disabled it
+                        if healthStore.dataSource == .empty {
+                            let useMock = UserDefaults.standard.bool(forKey: "use_mock_data")
+                            if useMock {
+                                await healthStore.loadMockData()
+                            }
+                        }
                         await healthStore.runLocalAnalysis()
                     }
                 }

@@ -58,8 +58,11 @@ struct ThirtyDaySummary: Codable {
     let avgRestingHR: Double
     let avgActiveEnergy: Double
     let workoutFrequency: Int
+    let totalWorkoutMinutes: Int
     let trainingLoadChange: String
     let recoveryTrend: String
+    let sleepTrend: String
+    let activityTrend: String
 }
 
 struct DailyValue: Codable {

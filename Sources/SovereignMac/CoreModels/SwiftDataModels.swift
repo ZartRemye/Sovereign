@@ -13,6 +13,24 @@ enum HealthMetricType: String, Codable, CaseIterable {
     case distance = "HKQuantityTypeIdentifierDistanceWalkingRunning"
     case vo2Max = "HKQuantityTypeIdentifierVO2Max"
     case sleep = "HKCategoryTypeIdentifierSleepAnalysis"
+    case bodyMass = "HKQuantityTypeIdentifierBodyMass"
+    case height = "HKQuantityTypeIdentifierHeight"
+
+    var displayName: String {
+        switch self {
+        case .stepCount: return "步数"
+        case .heartRate: return "心率"
+        case .restingHeartRate: return "静息心率"
+        case .heartRateVariability: return "HRV"
+        case .activeEnergy: return "活动能量"
+        case .exerciseTime: return "运动时间"
+        case .distance: return "距离"
+        case .vo2Max: return "最大摄氧量"
+        case .sleep: return "睡眠"
+        case .bodyMass: return "体重"
+        case .height: return "身高"
+        }
+    }
 }
 
 enum WorkoutType: String, Codable, CaseIterable {
@@ -20,9 +38,19 @@ enum WorkoutType: String, Codable, CaseIterable {
     case walking = "Walking"
     case cycling = "Cycling"
     case strength = "Strength Training"
+    case functionalStrength = "Functional Strength"
     case swimming = "Swimming"
     case yoga = "Yoga"
     case hiit = "HIIT"
+    case hiking = "Hiking"
+    case crossTraining = "Cross Training"
+    case elliptical = "Elliptical"
+    case rowing = "Rowing"
+    case stairClimbing = "Stair Climbing"
+    case dance = "Dance"
+    case pilates = "Pilates"
+    case taiChi = "Tai Chi"
+    case mixedCardio = "Mixed Cardio"
     case other = "Other"
 
     var systemImage: String {
@@ -30,10 +58,15 @@ enum WorkoutType: String, Codable, CaseIterable {
         case .running: "figure.run"
         case .walking: "figure.walk"
         case .cycling: "bicycle"
-        case .strength: "dumbbell"
+        case .strength, .functionalStrength: "dumbbell"
         case .swimming: "figure.pool.swim"
-        case .yoga: "figure.mind.and.body"
+        case .yoga, .pilates, .taiChi: "figure.mind.and.body"
         case .hiit: "figure.highintensity.intervaltraining"
+        case .hiking: "figure.hiking"
+        case .crossTraining, .elliptical, .mixedCardio: "figure.mixed.cardio"
+        case .rowing: "figure.rower"
+        case .stairClimbing: "figure.stairs"
+        case .dance: "figure.dance"
         case .other: "figure.mixed.cardio"
         }
     }
@@ -47,7 +80,8 @@ enum InsightSeverity: String, Codable, CaseIterable {
 }
 
 enum DataSource: String, Codable {
-    case mockLive = "Mock Live"
+    case empty = "Empty"
+    case mockLive = "Demo Data"
     case appleHealthImport = "Apple Health Import"
     case iphoneSync = "iPhone Sync"
     case watchLive = "Watch Live"
@@ -73,6 +107,8 @@ final class HealthMetricSample {
     var date: Date = Date()
     var sourceRaw: String = DataSource.unknown.rawValue
     var deviceName: String?
+    /// Fingerprint for dedup (sourceName + type + date + value + unit)
+    var fingerprint: String?
 
     var metricType: HealthMetricType {
         HealthMetricType(rawValue: metricTypeRaw) ?? .stepCount
@@ -126,7 +162,15 @@ final class WorkoutSession {
 
     var distanceFormatted: String? {
         guard let meters = distanceMeters else { return nil }
-        return String(format: "%.2f km", meters / 1000)
+        if meters >= 1000 {
+            return String(format: "%.2f km", meters / 1000)
+        }
+        return String(format: "%.0f m", meters)
+    }
+
+    var activeEnergyKcal: Double? {
+        guard let kj = activeEnergyKJ else { return nil }
+        return kj / 4.184
     }
 
     init(workoutType: WorkoutType, startDate: Date, endDate: Date, durationSeconds: Double,
@@ -154,9 +198,13 @@ final class SleepSession {
     var startDate: Date = Date()
     var endDate: Date = Date()
     var durationSeconds: Double = 0
+    var timeInBedSeconds: Double = 0
     var deepSleepSeconds: Double = 0
     var remSleepSeconds: Double = 0
     var coreSleepSeconds: Double = 0
+    var awakeSeconds: Double = 0
+    /// 0.0-1.0: how reliable the sleep stage data is (1.0 = real stages, <0.5 = estimate from InBed only)
+    var sleepDataQuality: Double = 0
     var qualityScore: Double = 0
     var sourceRaw: String = DataSource.unknown.rawValue
 
@@ -170,14 +218,27 @@ final class SleepSession {
         return "\(hours)h \(minutes)m"
     }
 
-    init(startDate: Date, endDate: Date, durationSeconds: Double, deepSleepSeconds: Double = 0,
-         remSleepSeconds: Double = 0, coreSleepSeconds: Double = 0, qualityScore: Double = 0, source: DataSource = .unknown) {
+    var asleepHours: Double { durationSeconds / 3600 }
+    var deepSleepHours: Double { deepSleepSeconds / 3600 }
+    var remSleepHours: Double { remSleepSeconds / 3600 }
+
+    var hasRealSleepStages: Bool { sleepDataQuality >= 0.8 }
+    var isInBedOnly: Bool { sleepDataQuality < 0.5 && timeInBedSeconds > 0 }
+
+    init(startDate: Date, endDate: Date, durationSeconds: Double,
+         timeInBedSeconds: Double = 0, deepSleepSeconds: Double = 0,
+         remSleepSeconds: Double = 0, coreSleepSeconds: Double = 0,
+         awakeSeconds: Double = 0, sleepDataQuality: Double = 0,
+         qualityScore: Double = 0, source: DataSource = .unknown) {
         self.startDate = startDate
         self.endDate = endDate
         self.durationSeconds = durationSeconds
+        self.timeInBedSeconds = timeInBedSeconds
         self.deepSleepSeconds = deepSleepSeconds
         self.remSleepSeconds = remSleepSeconds
         self.coreSleepSeconds = coreSleepSeconds
+        self.awakeSeconds = awakeSeconds
+        self.sleepDataQuality = sleepDataQuality
         self.qualityScore = qualityScore
         self.sourceRaw = source.rawValue
     }
@@ -189,19 +250,62 @@ final class SleepSession {
 final class DailySummary {
     var id: UUID = UUID()
     var date: Date = Date()
+
+    // Core metrics
     var steps: Int = 0
+    var averageHeartRate: Double = 0
     var restingHeartRate: Double = 0
     var heartRateVariability: Double?
-    var sleepDurationSeconds: Double = 0
-    var activeEnergyKJ: Double = 0
+    var sleepHours: Double = 0          // Asleep time in hours
+    var timeInBed: Double = 0           // Total time in bed in hours
+    var activeEnergy: Double = 0        // kJ
     var exerciseMinutes: Int = 0
-    var recoveryScore: Double = 0
+    var walkingRunningDistance: Double = 0 // meters
+
+    // Body metrics
+    var bodyMass: Double?               // kg
+    var height: Double?                 // cm
+    var vo2Max: Double?                 // mL/kg·min
+
+    // Workout summary
+    var workoutCount: Int = 0
+    var workoutMinutes: Double = 0
     var trainingLoad: Double = 0
+
+    // Recovery
+    var recoveryScore: Double = 0
     var healthStatusRaw: String = HealthStatus.insufficientData.rawValue
+
+    // Sleep detail (hours)
+    var deepSleep: Double = 0
+    var remSleep: Double = 0
+    var awakeTime: Double = 0
+    var sleepDataQuality: Double = 0
+
+    // Data quality
+    var dataCompleteness: Double = 0    // 0.0-1.0
+    var sourceRaw: String = DataSource.unknown.rawValue
+
+    // Summary text
     var summaryText: String?
+
+    // Legacy compatibility
+    var sleepDurationSeconds: Double {
+        get { sleepHours * 3600 }
+        set { sleepHours = newValue / 3600 }
+    }
+
+    var activeEnergyKJ: Double {
+        get { activeEnergy }
+        set { activeEnergy = newValue }
+    }
 
     var healthStatus: HealthStatus {
         HealthStatus(rawValue: healthStatusRaw) ?? .insufficientData
+    }
+
+    var source: DataSource {
+        DataSource(rawValue: sourceRaw) ?? .unknown
     }
 
     var dateFormatted: String {
@@ -211,24 +315,29 @@ final class DailySummary {
     }
 
     var sleepFormatted: String {
-        let hours = Int(sleepDurationSeconds) / 3600
-        let minutes = (Int(sleepDurationSeconds) % 3600) / 60
-        return "\(hours)h \(minutes)m"
+        if sleepHours >= 1 {
+            let hours = Int(sleepHours)
+            let minutes = Int((sleepHours - Double(hours)) * 60)
+            return "\(hours)h \(minutes)m"
+        }
+        return "0h"
     }
 
     init(date: Date, steps: Int = 0, restingHeartRate: Double = 0, heartRateVariability: Double? = nil,
-         sleepDurationSeconds: Double = 0, activeEnergyKJ: Double = 0, exerciseMinutes: Int = 0,
-         recoveryScore: Double = 0, trainingLoad: Double = 0, healthStatus: HealthStatus = .insufficientData) {
+         sleepHours: Double = 0, activeEnergy: Double = 0, exerciseMinutes: Int = 0,
+         recoveryScore: Double = 0, trainingLoad: Double = 0, healthStatus: HealthStatus = .insufficientData,
+         source: DataSource = .unknown) {
         self.date = date
         self.steps = steps
         self.restingHeartRate = restingHeartRate
         self.heartRateVariability = heartRateVariability
-        self.sleepDurationSeconds = sleepDurationSeconds
-        self.activeEnergyKJ = activeEnergyKJ
+        self.sleepHours = sleepHours
+        self.activeEnergy = activeEnergy
         self.exerciseMinutes = exerciseMinutes
         self.recoveryScore = recoveryScore
         self.trainingLoad = trainingLoad
         self.healthStatusRaw = healthStatus.rawValue
+        self.sourceRaw = source.rawValue
     }
 }
 
@@ -367,5 +476,64 @@ final class AIAnalysisCache {
         self.response = response
         self.modelUsed = modelUsed
         self.contextDateRange = contextDateRange
+    }
+}
+
+// MARK: - Import Diagnostics Record
+
+@Model
+final class ImportDiagnostic {
+    var id: UUID = UUID()
+    var fileName: String = ""
+    var importTime: Date = Date()
+    var success: Bool = false
+    var dateRangeStart: Date?
+    var dateRangeEnd: Date?
+    var parsedByTypeJSON: String = "{}"     // JSON-encoded [String: Int]
+    var savedByTypeJSON: String = "{}"
+    var skippedReasonsJSON: String = "{}"
+    var totalMetricSamples: Int = 0
+    var totalWorkouts: Int = 0
+    var totalSleepSessions: Int = 0
+    var totalDailySummaries: Int = 0
+    var errorMessage: String?
+
+    var parsedByType: [String: Int] {
+        guard let data = parsedByTypeJSON.data(using: .utf8),
+              let dict = try? JSONDecoder().decode([String: Int].self, from: data) else { return [:] }
+        return dict
+    }
+
+    var savedByType: [String: Int] {
+        guard let data = savedByTypeJSON.data(using: .utf8),
+              let dict = try? JSONDecoder().decode([String: Int].self, from: data) else { return [:] }
+        return dict
+    }
+
+    var skippedReasons: [String: Int] {
+        guard let data = skippedReasonsJSON.data(using: .utf8),
+              let dict = try? JSONDecoder().decode([String: Int].self, from: data) else { return [:] }
+        return dict
+    }
+
+    init(fileName: String, importTime: Date, success: Bool, dateRangeStart: Date?, dateRangeEnd: Date?,
+         parsedByType: [String: Int], savedByType: [String: Int], skippedReasons: [String: Int],
+         totalMetricSamples: Int, totalWorkouts: Int, totalSleepSessions: Int, totalDailySummaries: Int,
+         errorMessage: String?) {
+        self.fileName = fileName
+        self.importTime = importTime
+        self.success = success
+        self.dateRangeStart = dateRangeStart
+        self.dateRangeEnd = dateRangeEnd
+        self.totalMetricSamples = totalMetricSamples
+        self.totalWorkouts = totalWorkouts
+        self.totalSleepSessions = totalSleepSessions
+        self.totalDailySummaries = totalDailySummaries
+        self.errorMessage = errorMessage
+
+        let encoder = JSONEncoder()
+        self.parsedByTypeJSON = (try? encoder.encode(parsedByType)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        self.savedByTypeJSON = (try? encoder.encode(savedByType)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        self.skippedReasonsJSON = (try? encoder.encode(skippedReasons)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
     }
 }

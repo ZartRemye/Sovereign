@@ -1,7 +1,7 @@
 import Foundation
 
 /// Generates realistic mock health data for development and demo purposes.
-/// Covers ~90 days of data.
+/// Covers ~90 days of data. ALL mock data is clearly marked with source .mockLive ("Demo Data").
 actor MockHealthDataProvider {
     static let shared = MockHealthDataProvider()
 
@@ -30,7 +30,6 @@ actor MockHealthDataProvider {
 
     func generateLiveHeartRate() -> Double {
         let baseHR = 62.0 + Double.random(in: -5...8)
-        // Occasionally spike
         if Int.random(in: 1...20) == 1 {
             return baseHR + Double.random(in: 10...25)
         }
@@ -38,7 +37,6 @@ actor MockHealthDataProvider {
     }
 
     func generateLiveSteps() -> Int {
-        // Simulates accumulating steps through the day
         let hour = Calendar.current.component(.hour, from: Date())
         let maxSteps = 10000
         let progress = min(Double(hour) / 22.0, 1.0)
@@ -55,9 +53,8 @@ actor MockHealthDataProvider {
         for dayOffset in 0..<days {
             guard let date = calendar.date(byAdding: .day, value: -dayOffset, to: today) else { continue }
 
-            // Daily steps: baseline + variation
+            // Daily steps
             let baseSteps = Double.random(in: 6000...12000)
-            // Less active on "rest days"
             let isRestDay = dayOffset % 7 == 0 || dayOffset % 7 == 6
             let steps = isRestDay ? baseSteps * Double.random(in: 0.4...0.7) : baseSteps
 
@@ -69,10 +66,9 @@ actor MockHealthDataProvider {
                 source: .mockLive
             ))
 
-            // Resting HR: gradual trend with daily variation
+            // Resting HR
             let trendHR = 62.0 + sin(Double(dayOffset) * 0.1) * 3.0
             let restingHR = trendHR + Double.random(in: -2...3)
-
             samples.append(HealthMetricSample(
                 metricType: .restingHeartRate,
                 value: restingHR,
@@ -111,17 +107,17 @@ actor MockHealthDataProvider {
                 source: .mockLive
             ))
 
-            // Distance
+            // Distance (walking+running)
             let distance = Double(steps) * 0.0007 + Double.random(in: -0.5...0.5)
             samples.append(HealthMetricSample(
                 metricType: .distance,
-                value: max(0, distance),
-                unit: "km",
+                value: max(0, distance * 1000), // store in meters
+                unit: "meter",
                 date: calendar.date(bySettingHour: 18, minute: 0, second: 0, of: date) ?? date,
                 source: .mockLive
             ))
 
-            // VO2Max (only every few days for realism)
+            // VO2Max (every few days)
             if dayOffset % 3 == 0 {
                 let vo2max = 42.0 + Double.random(in: -3...3)
                 samples.append(HealthMetricSample(
@@ -129,6 +125,28 @@ actor MockHealthDataProvider {
                     value: vo2max,
                     unit: "mL/kg·min",
                     date: calendar.date(bySettingHour: 10, minute: 0, second: 0, of: date) ?? date,
+                    source: .mockLive
+                ))
+            }
+
+            // Body mass (weekly)
+            if dayOffset % 7 == 0 {
+                samples.append(HealthMetricSample(
+                    metricType: .bodyMass,
+                    value: 72.0 + Double.random(in: -1.5...1.5),
+                    unit: "kg",
+                    date: calendar.date(bySettingHour: 8, minute: 0, second: 0, of: date) ?? date,
+                    source: .mockLive
+                ))
+            }
+
+            // Height (only once)
+            if dayOffset == 0 {
+                samples.append(HealthMetricSample(
+                    metricType: .height,
+                    value: 175.0,
+                    unit: "cm",
+                    date: date,
                     source: .mockLive
                 ))
             }
@@ -146,7 +164,6 @@ actor MockHealthDataProvider {
         for dayOffset in 0..<days {
             guard let date = calendar.date(byAdding: .day, value: -dayOffset, to: today) else { continue }
 
-            // 3-5 workouts per week
             let workoutsToday: Int
             if dayOffset % 7 == 0 || dayOffset % 7 == 3 {
                 workoutsToday = 0 // Rest days
@@ -225,14 +242,12 @@ actor MockHealthDataProvider {
         for dayOffset in 0..<days {
             guard let date = calendar.date(byAdding: .day, value: -dayOffset, to: today) else { continue }
 
-            // Bedtime around 10pm-12am previous day, wake 6-8am
             let bedtimeHour = Int.random(in: 22...23)
             let bedMinute = Int.random(in: 0...59)
             var bedComponents = calendar.dateComponents([.year, .month, .day], from: date)
             bedComponents.hour = bedtimeHour
             bedComponents.minute = bedMinute
             guard let bedDate = calendar.date(from: bedComponents) else { continue }
-            // Bedtime is on the previous day
             let sleepStart = calendar.date(byAdding: .day, value: -1, to: bedDate) ?? bedDate
 
             let wakeHour = Int.random(in: 6...8)
@@ -245,7 +260,7 @@ actor MockHealthDataProvider {
             let duration = wakeDate.timeIntervalSince(sleepStart)
             guard duration > 0 else { continue }
 
-            let hasPoorSleep = dayOffset % 5 == 0 // Simulate occasional poor sleep
+            let hasPoorSleep = dayOffset % 5 == 0
             let actualDuration = hasPoorSleep ? duration * Double.random(in: 0.65...0.85) : duration
             let quality = hasPoorSleep ? Double.random(in: 0.3...0.55) : Double.random(in: 0.65...0.9)
 
@@ -253,9 +268,12 @@ actor MockHealthDataProvider {
                 startDate: sleepStart,
                 endDate: wakeDate,
                 durationSeconds: actualDuration,
+                timeInBedSeconds: duration,
                 deepSleepSeconds: actualDuration * Double.random(in: 0.12...0.22),
                 remSleepSeconds: actualDuration * Double.random(in: 0.18...0.28),
                 coreSleepSeconds: actualDuration * Double.random(in: 0.45...0.55),
+                awakeSeconds: duration * 0.05,
+                sleepDataQuality: 0.3, // Mock data is low quality
                 qualityScore: quality * 100,
                 source: .mockLive
             ))
@@ -279,6 +297,8 @@ actor MockHealthDataProvider {
                 sleepSessions: sleep,
                 previousSummaries: summaries
             )
+            // Ensure mock data is marked as mock
+            summary.sourceRaw = DataSource.mockLive.rawValue
             summaries.append(summary)
         }
 

@@ -9,46 +9,22 @@ struct AICoachView: View {
     @State private var aiMode: String = "Local Rules"
     @State private var errorMessage: String?
     @State private var hasAPIKeyConfigured: Bool = false
+    @State private var showDataBasis: UUID?
 
     private let safetyGuard = HealthSafetyGuard()
     private let localRules = LocalRuleAIService.shared
 
     private let quickQuestions = [
         "我今天适合训练吗？",
-        "我最近恢复怎么样？",
-        "我为什么最近感觉累？",
-        "我最近睡眠有什么问题？",
-        "我的训练负荷是不是太高？",
-        "帮我生成今天的健康总结。",
-        "帮我生成这周的训练建议。",
+        "我最近恢复为什么变化？",
+        "我这周训练应该怎么安排？",
+        "我睡眠和疲劳有什么关系？",
     ]
 
     var body: some View {
         VStack(spacing: 0) {
-            // Chat header
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("AI 教练")
-                        .font(AppTypography.largeTitle)
-                    HStack(spacing: AppSpacing.sm) {
-                        Circle()
-                            .fill(aiModeColor)
-                            .frame(width: 8, height: 8)
-                        Text("当前模式: \(aiMode)")
-                            .font(AppTypography.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-                Spacer()
-
-                Toggle("DeepSeek", isOn: $useDeepSeek)
-                    .toggleStyle(.switch)
-                    .onChange(of: useDeepSeek) { newValue in
-                        UserDefaults.standard.set(newValue, forKey: "deepseek_enabled")
-                        Task { await updateAIMode() }
-                    }
-            }
-            .padding()
+            // Header
+            coachHeader
 
             Divider()
 
@@ -61,13 +37,16 @@ struct AICoachView: View {
                         }
 
                         ForEach(messages) { message in
-                            ChatMessageBubble(message: message)
+                            ChatMessageBubble(message: message, showDataBasis: $showDataBasis)
                         }
 
                         if isLoading {
                             HStack {
                                 ProgressView()
                                     .padding()
+                                Text("思考中...")
+                                    .font(AppTypography.caption)
+                                    .foregroundColor(.secondary)
                                 Spacer()
                             }
                         }
@@ -107,7 +86,7 @@ struct AICoachView: View {
 
             // Input bar
             HStack(spacing: AppSpacing.md) {
-                TextField("输入问题...", text: $inputText)
+                TextField("输入健康相关问题...", text: $inputText)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { sendMessage(inputText) }
 
@@ -127,32 +106,78 @@ struct AICoachView: View {
         }
     }
 
+    // MARK: - Header
+
+    private var coachHeader: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("AI 健康教练")
+                    .font(AppTypography.largeTitle)
+                HStack(spacing: AppSpacing.sm) {
+                    // Data source badge
+                    DataSourceBadge(source: healthStore.dataSource)
+
+                    Circle()
+                        .fill(aiModeColor)
+                        .frame(width: 6, height: 6)
+                    Text(aiMode)
+                        .font(AppTypography.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            Spacer()
+
+            Toggle("DeepSeek", isOn: $useDeepSeek)
+                .toggleStyle(.switch)
+                .onChange(of: useDeepSeek) { newValue in
+                    UserDefaults.standard.set(newValue, forKey: "deepseek_enabled")
+                    Task { await updateAIMode() }
+                }
+        }
+        .padding()
+    }
+
     // MARK: - Welcome View
 
     private var welcomeView: some View {
         VStack(spacing: AppSpacing.lg) {
-            Image(systemName: "bubble.left.and.text.bubble.right.fill")
+            Image(systemName: "brain.head.profile")
                 .font(.system(size: 48))
                 .foregroundColor(.accentColor)
 
-            Text("你好！我是 Sovereign AI 教练")
+            Text("你好！我是你的私人健康分析师")
                 .font(AppTypography.title2)
 
-            Text("我可以帮你分析健康数据、提供训练建议、解答恢复问题。\n所有建议基于本地数据分析，不是医疗诊断。")
-                .font(AppTypography.callout)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
+            if healthStore.dataSource == .empty {
+                VStack(spacing: 8) {
+                    Text("目前没有健康数据。导入 Apple Health 数据后，我可以帮你分析趋势、评估恢复状态、给出训练建议。")
+                        .font(AppTypography.callout)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
 
-            if !useDeepSeek || !hasAPIKeyConfigured {
-                Text("当前使用本地规则引擎。在设置中配置 DeepSeek API Key 可启用云端 AI 分析。")
-                    .font(AppTypography.caption)
+                    Text("所有分析基于本地数据，不是医疗诊断。")
+                        .font(AppTypography.caption)
+                        .foregroundColor(.secondary)
+                }
+            } else {
+                Text("基于\(healthStore.dataSource == .mockLive ? "Demo 演示" : "真实 Apple Health")数据分析。\n选择一个快捷问题开始，或输入你的问题。")
+                    .font(AppTypography.callout)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
-                    .padding()
-                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            }
+
+            if !useDeepSeek || !hasAPIKeyConfigured {
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle")
+                    Text("当前使用本地规则引擎。配置 DeepSeek API Key 可启用更智能的云端分析。")
+                }
+                .font(AppTypography.caption)
+                .foregroundColor(.secondary)
+                .padding()
+                .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
             }
         }
-        .frame(maxWidth: 400)
+        .frame(maxWidth: 420)
         .padding(.vertical, 40)
     }
 
@@ -178,7 +203,7 @@ struct AICoachView: View {
                 messages.append(ChatMessage(
                     role: .assistant,
                     content: warning,
-                    contextSummary: "安全拦截",
+                    contextSummary: "安全拦截: \(safetyResult.category?.rawValue ?? "")",
                     isFallback: true
                 ))
                 return
@@ -202,10 +227,11 @@ struct AICoachView: View {
                         userMessage: prompt
                     )
 
+                    let contextSummary = buildContextSummary(context: context)
                     messages.append(ChatMessage(
                         role: .assistant,
                         content: response,
-                        contextSummary: "基于 DeepSeek V4 · 数据范围: \(context.dataQuality.dateRangeStart) 至 \(context.dataQuality.dateRangeEnd)",
+                        contextSummary: contextSummary,
                         isFallback: false
                     ))
                     return
@@ -216,7 +242,6 @@ struct AICoachView: View {
                         content: "DeepSeek 请求失败 (\(error.localizedDescription))，已切换本地规则引擎。",
                         timestamp: Date()
                     ))
-                    // Fall through to local rules
                 }
             }
 
@@ -233,6 +258,20 @@ struct AICoachView: View {
                 messages.append(message)
             }
         }
+    }
+
+    // MARK: - Helpers
+
+    private func buildContextSummary(context: HealthContext) -> String {
+        var parts: [String] = []
+        parts.append("基于 DeepSeek V4")
+        parts.append("数据范围: \(context.dataQuality.dateRangeStart) 至 \(context.dataQuality.dateRangeEnd)")
+        if context.isMockData {
+            parts.append("⚠️ Demo 数据")
+        } else {
+            parts.append("真实数据")
+        }
+        return parts.joined(separator: " · ")
     }
 
     private func checkAPIKey() async {
@@ -258,5 +297,47 @@ struct AICoachView: View {
         if aiMode.contains("DeepSeek") { return .purple }
         if aiMode.contains("Fallback") { return .orange }
         return .gray
+    }
+}
+
+// MARK: - Data Source Badge
+
+struct DataSourceBadge: View {
+    let source: DataSource
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(badgeColor)
+                .frame(width: 6, height: 6)
+            Text(badgeText)
+                .font(AppTypography.caption2)
+                .foregroundColor(badgeColor)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(badgeColor.opacity(0.1), in: Capsule())
+    }
+
+    private var badgeColor: Color {
+        switch source {
+        case .empty: return .gray
+        case .mockLive: return .orange
+        case .appleHealthImport: return .green
+        case .iphoneSync: return .blue
+        case .watchLive: return .purple
+        case .unknown: return .gray
+        }
+    }
+
+    private var badgeText: String {
+        switch source {
+        case .empty: return "无数据"
+        case .mockLive: return "Demo Data"
+        case .appleHealthImport: return "Apple Health"
+        case .iphoneSync: return "iPhone"
+        case .watchLive: return "Watch"
+        case .unknown: return "未知"
+        }
     }
 }
