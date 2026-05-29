@@ -24,12 +24,16 @@ final class MacHealthStore: ObservableObject {
     @Published var dbSleepCount: Int = 0
     @Published var dbSummaryCount: Int = 0
 
-    private var modelContext: ModelContext?
+    private var _modelContext: ModelContext?
+
+    /// Exposed for ImportCoordinator checkpoint access
+    var modelContext: ModelContext? { _modelContext }
 
     private init() {}
 
     func configure(with context: ModelContext) {
-        self.modelContext = context
+        self._modelContext = context
+        ImportCoordinator.shared.configure(with: context)
         Task { await detectDataSource() }
     }
 
@@ -96,45 +100,6 @@ final class MacHealthStore: ObservableObject {
         dailySummaries = mockData.dailySummaries.sorted { $0.date > $1.date }
         recentWorkouts = mockData.workouts.sorted { $0.startDate > $1.startDate }
         recentSleep = mockData.sleepSessions.sorted { $0.startDate > $1.startDate }
-    }
-
-    // MARK: - Import Health Data (full pipeline)
-
-    func importHealthData(from url: URL, progress: @escaping (Double, String) -> Void) async throws -> DetailedImportResult {
-        guard let context = modelContext else {
-            throw ImportError(message: "数据库未初始化", underlyingError: nil)
-        }
-
-        let service = HealthImportService.shared
-        let result = try await service.importAndPersist(at: url, into: context, progress: progress)
-
-        dataSource = .appleHealthImport
-
-        // Save import diagnostic
-        let diagnostic = ImportDiagnostic(
-            fileName: result.fileName,
-            importTime: result.importTime,
-            success: result.success,
-            dateRangeStart: result.dateRangeStart,
-            dateRangeEnd: result.dateRangeEnd,
-            parsedByType: result.parsedByType,
-            savedByType: result.savedByType,
-            skippedReasons: result.skippedReasons,
-            totalMetricSamples: result.totalMetricSamples,
-            totalWorkouts: result.totalWorkouts,
-            totalSleepSessions: result.totalSleepSessions,
-            totalDailySummaries: result.totalDailySummaries,
-            errorMessage: result.parseError
-        )
-        context.insert(diagnostic)
-        try? context.save()
-        lastImportDiagnostic = diagnostic
-
-        // Refresh local state
-        await refresh()
-        await runLocalAnalysis()
-
-        return result
     }
 
     // MARK: - Legacy import (for backward compat)

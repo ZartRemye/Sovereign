@@ -93,14 +93,16 @@ final class BackgroundAnalysisScheduler: ObservableObject {
             dataSource: store.dataSource
         )
 
+        let runtime = await AIRuntimeStatus.current(dataSource: store.dataSource, summaries: store.dailySummaries)
         let prompt = HealthPromptBuilder.buildUserPrompt(
             question: type == "morning_summary" ? "生成今天的晨间健康总结和训练建议。" : "生成今天的晚间健康总结和明日建议。",
-            context: context
+            context: context,
+            runtime: runtime
         )
 
         do {
             let response = try await DeepSeekClient.shared.chat(
-                systemPrompt: HealthPromptBuilder.systemPrompt,
+                systemPrompt: HealthPromptBuilder.systemPrompt(for: runtime),
                 userMessage: prompt
             )
 

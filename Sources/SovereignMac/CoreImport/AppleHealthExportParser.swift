@@ -1,7 +1,7 @@
 import Foundation
 
 /// Stream-based Apple Health Export XML parser using Foundation's XMLParser (SAX-style).
-/// Do not load the entire XML into memory — parse incrementally.
+/// Tracks byte-level progress via a ProgressTrackingInputStream wrapper.
 final class AppleHealthExportParser: NSObject, XMLParserDelegate {
     private let parser: XMLParser
     private var parsedMetrics: [ParsedHealthMetric] = []
@@ -31,26 +31,49 @@ final class AppleHealthExportParser: NSObject, XMLParserDelegate {
     private var currentWorkoutDuration = ""
     private var currentWorkoutDistance = ""
     private var currentWorkoutEnergy = ""
-    private var currentWorkoutAvgHR = ""
-    private var currentWorkoutMaxHR = ""
 
     // Progress tracking
-    private var totalBytes: Int64 = 0
-    private var parsedBytes: Int64 = 0
-    var onProgress: ((Double) -> Void)?
+    private let progressStream: ProgressTrackingInputStream?
+    private let estimatedSize: Int64
+
+    // Counters
+    private(set) var recordsScanned: Int64 = 0
+    private(set) var recordsImported: Int64 = 0
+    private(set) var recordsSkipped: Int64 = 0
+
+    // Rich progress callbacks
+    var onRichProgress: ((_ parsedBytes: Int64, _ scanned: Int64, _ imported: Int64, _ skipped: Int64, _ currentType: String, _ currentDate: Date?) -> Void)?
+    var onWorkoutParsed: (() -> Void)?
+    var onSleepParsed: (() -> Void)?
     var isCancelled = false
 
-    init?(fileURL: URL) {
-        guard let parser = XMLParser(contentsOf: fileURL) else { return nil }
+    /// Initialize with a file stream for byte-level progress
+    init?(stream: FileHandle, estimatedSize: Int64) {
+        self.estimatedSize = estimatedSize
+        let trackingStream = ProgressTrackingInputStream(fileHandle: stream, totalSize: estimatedSize)
+        self.progressStream = trackingStream
+
+        let parser = XMLParser(stream: trackingStream)
         self.parser = parser
-        self.totalBytes = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
         super.init()
         self.parser.delegate = self
     }
 
+    /// Initialize from file URL (legacy, no byte progress)
+    init?(fileURL: URL) {
+        self.estimatedSize = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        self.progressStream = nil
+        guard let parser = XMLParser(contentsOf: fileURL) else { return nil }
+        self.parser = parser
+        super.init()
+        self.parser.delegate = self
+    }
+
+    /// Initialize from Data
     init(data: Data) {
+        self.estimatedSize = Int64(data.count)
+        self.progressStream = nil
         self.parser = XMLParser(data: data)
-        self.totalBytes = Int64(data.count)
         super.init()
         self.parser.delegate = self
     }
@@ -58,33 +81,28 @@ final class AppleHealthExportParser: NSObject, XMLParserDelegate {
     func parse() -> ImportParseResult {
         let success = parser.parse()
         if isCancelled {
-            return ImportParseResult(
-                metrics: parsedMetrics,
-                workouts: parsedWorkouts,
-                sleepSessions: parsedSleep,
-                parsedByType: parsedByType,
-                skippedReasons: skippedReasons,
-                parseError: ImportError(message: "导入已取消", underlyingError: nil)
-            )
+            return makeResult(error: ImportError(message: "导入已取消", underlyingError: nil))
         }
         if !success, let error = parser.parserError {
-            return ImportParseResult(
-                metrics: parsedMetrics,
-                workouts: parsedWorkouts,
-                sleepSessions: parsedSleep,
-                parsedByType: parsedByType,
-                skippedReasons: skippedReasons,
-                parseError: ImportError(message: "XML 解析错误: \(error.localizedDescription)", underlyingError: error)
-            )
+            return makeResult(error: ImportError(message: "XML 解析错误: \(error.localizedDescription)", underlyingError: error))
         }
-        return ImportParseResult(
+        return makeResult(error: nil)
+    }
+
+    private func makeResult(error: ImportError?) -> ImportParseResult {
+        ImportParseResult(
             metrics: parsedMetrics,
             workouts: parsedWorkouts,
             sleepSessions: parsedSleep,
             parsedByType: parsedByType,
             skippedReasons: skippedReasons,
-            parseError: nil
+            parseError: error
         )
+    }
+
+    /// Current byte position from the progress stream
+    var currentBytePosition: Int64 {
+        progressStream?.bytesRead ?? 0
     }
 
     // MARK: - XMLParserDelegate
@@ -111,7 +129,6 @@ final class AppleHealthExportParser: NSObject, XMLParserDelegate {
             currentRecordStartDate = attributeDict["startDate"] ?? ""
             currentRecordEndDate = attributeDict["endDate"] ?? ""
             currentRecordSourceName = attributeDict["sourceName"] ?? ""
-            // Also parse WorkoutStatistics if present
         }
     }
 
@@ -121,14 +138,18 @@ final class AppleHealthExportParser: NSObject, XMLParserDelegate {
 
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
         if elementName == "Record" {
+            recordsScanned += 1
             processRecord()
         } else if elementName == "Workout" {
+            recordsScanned += 1
             processWorkout()
         }
 
-        // Report progress periodically
-        if parsedMetrics.count % 5000 == 0 {
-            onProgress?(min(Double(parsedMetrics.count) / 50000.0, 0.99))
+        // Report rich progress periodically (throttled by caller via onRichProgress callback)
+        if recordsScanned % 2000 == 0, let stream = progressStream {
+            let date = parseHealthDate(currentRecordStartDate)
+            let displayType = displayNameShort(currentRecordType)
+            onRichProgress?(stream.bytesRead, recordsScanned, recordsImported, recordsSkipped, displayType, date)
         }
     }
 
@@ -137,23 +158,22 @@ final class AppleHealthExportParser: NSObject, XMLParserDelegate {
     private func processRecord() {
         let rawType = currentRecordType
 
-        // Try to match the type (case-insensitive, with prefix variants)
         guard let matchedType = matchSupportedType(rawType) else {
             skippedReasons["不支持的类型", default: 0] += 1
+            recordsSkipped += 1
             return
         }
 
-        // Special handling for sleep records (categorical)
+        // Sleep records (categorical)
         if matchedType == "HKCategoryTypeIdentifierSleepAnalysis" {
             guard let startDate = parseHealthDate(currentRecordStartDate),
                   let endDate = parseHealthDate(currentRecordEndDate) else {
                 skippedReasons["日期解析失败", default: 0] += 1
+                recordsSkipped += 1
                 return
             }
 
-            // value is a category string like HKCategoryValueSleepAnalysisAsleep
-            let valueStr = currentRecordValue
-            let sleepValue = parseSleepCategory(valueStr)
+            let sleepValue = parseSleepCategory(currentRecordValue)
 
             let metric = ParsedHealthMetric(
                 type: matchedType,
@@ -166,26 +186,30 @@ final class AppleHealthExportParser: NSObject, XMLParserDelegate {
             )
             parsedMetrics.append(metric)
             parsedByType["SleepAnalysis", default: 0] += 1
+            recordsImported += 1
 
             let sleep = ParsedSleep(
                 startDate: startDate,
                 endDate: endDate,
                 value: sleepValue,
-                category: valueStr,
+                category: currentRecordValue,
                 sourceName: currentRecordSourceName.isEmpty ? nil : currentRecordSourceName
             )
             parsedSleep.append(sleep)
+            onSleepParsed?()
             return
         }
 
         // Regular quantitative metrics
         guard let value = Double(currentRecordValue) else {
             skippedReasons["数值解析失败", default: 0] += 1
+            recordsSkipped += 1
             return
         }
 
         guard let startDate = parseHealthDate(currentRecordStartDate) else {
             skippedReasons["日期解析失败", default: 0] += 1
+            recordsSkipped += 1
             return
         }
 
@@ -202,6 +226,7 @@ final class AppleHealthExportParser: NSObject, XMLParserDelegate {
             device: currentRecordDevice
         )
         parsedMetrics.append(metric)
+        recordsImported += 1
 
         let displayType = displayName(for: matchedType)
         parsedByType[displayType, default: 0] += 1
@@ -211,6 +236,7 @@ final class AppleHealthExportParser: NSObject, XMLParserDelegate {
         guard let startDate = parseHealthDate(currentRecordStartDate),
               let endDate = parseHealthDate(currentRecordEndDate) else {
             skippedReasons["运动日期解析失败", default: 0] += 1
+            recordsSkipped += 1
             return
         }
 
@@ -232,12 +258,14 @@ final class AppleHealthExportParser: NSObject, XMLParserDelegate {
             sourceName: currentRecordSourceName.isEmpty ? nil : currentRecordSourceName
         )
         parsedWorkouts.append(workout)
+        recordsImported += 1
         parsedByType["Workout_\(typeName)", default: 0] += 1
+        onWorkoutParsed?()
     }
 
-    // MARK: - Type Matching (case-insensitive, prefix variants)
+    // MARK: - Type Matching
 
-    private let supportedTypePatterns: [String] = [
+    private let supportedTypePatterns: Set<String> = [
         "HKQuantityTypeIdentifierStepCount",
         "HKQuantityTypeIdentifierHeartRate",
         "HKQuantityTypeIdentifierRestingHeartRate",
@@ -252,35 +280,45 @@ final class AppleHealthExportParser: NSObject, XMLParserDelegate {
         "HKCategoryTypeIdentifierSleepAnalysis",
     ]
 
+    // Cached lowercased set for fast lookup
+    private lazy var lowercasedPatterns: Set<String> = {
+        Set(supportedTypePatterns.map { $0.lowercased() })
+    }()
+
+    private lazy var simplifiedPatterns: [(String, String)] = {
+        supportedTypePatterns.map { pattern in
+            let simple = pattern
+                .replacingOccurrences(of: "HKQuantityTypeIdentifier", with: "")
+                .replacingOccurrences(of: "HKCategoryTypeIdentifier", with: "")
+            return (simple, pattern)
+        }
+    }()
+
     private func matchSupportedType(_ raw: String) -> String? {
+        // Fast path: exact match
+        if supportedTypePatterns.contains(raw) { return raw }
+
+        // Case-insensitive
         let lowercased = raw.lowercased()
-
-        // Exact match first (fast path)
-        for pattern in supportedTypePatterns {
-            if raw == pattern { return pattern }
+        if lowercasedPatterns.contains(lowercased) {
+            return supportedTypePatterns.first { $0.lowercased() == lowercased }
         }
 
-        // Case-insensitive match
-        for pattern in supportedTypePatterns {
-            if lowercased == pattern.lowercased() { return pattern }
-        }
-
-        // Partial match — strip prefixes and try
+        // Partial match
         let simplified = raw
             .replacingOccurrences(of: "HKQuantityTypeIdentifier", with: "")
             .replacingOccurrences(of: "HKCategoryTypeIdentifier", with: "")
 
-        for pattern in supportedTypePatterns {
-            let patternSimple = pattern
-                .replacingOccurrences(of: "HKQuantityTypeIdentifier", with: "")
-                .replacingOccurrences(of: "HKCategoryTypeIdentifier", with: "")
-            if simplified.caseInsensitiveCompare(patternSimple) == .orderedSame {
+        for (simple, pattern) in simplifiedPatterns {
+            if simplified.caseInsensitiveCompare(simple) == .orderedSame {
                 return pattern
             }
         }
 
         return nil
     }
+
+    // MARK: - Helpers
 
     private func standardUnit(for type: String) -> String {
         switch type {
@@ -317,8 +355,22 @@ final class AppleHealthExportParser: NSObject, XMLParserDelegate {
         }
     }
 
-    /// Parse sleep category value to numeric coding:
-    /// 0 = InBed, 1 = AsleepUnspecified, 2 = AsleepCore, 3 = AsleepDeep, 4 = AsleepREM, 5 = Awake
+    private func displayNameShort(_ type: String) -> String {
+        if type.isEmpty { return "—" }
+        if type.contains("StepCount") { return "Steps" }
+        if type.contains("RestingHeartRate") { return "RestingHR" }
+        if type.contains("HeartRateVariability") { return "HRV" }
+        if type.contains("HeartRate") { return "HeartRate" }
+        if type.contains("ActiveEnergy") { return "Energy" }
+        if type.contains("ExerciseTime") { return "Exercise" }
+        if type.contains("Distance") { return "Distance" }
+        if type.contains("VO2Max") { return "VO2Max" }
+        if type.contains("BodyMass") { return "Weight" }
+        if type.contains("Height") { return "Height" }
+        if type.contains("Sleep") { return "Sleep" }
+        return type
+    }
+
     private func parseSleepCategory(_ raw: String) -> Double {
         let lowercased = raw.lowercased()
         if lowercased.contains("asleepdeep") || lowercased.contains("deep") { return 3.0 }
@@ -327,35 +379,31 @@ final class AppleHealthExportParser: NSObject, XMLParserDelegate {
         if lowercased.contains("asleep") { return 1.0 }
         if lowercased.contains("awake") { return 5.0 }
         if lowercased.contains("inbed") { return 0.0 }
-        return 1.0 // Default to asleep unspecified
+        return 1.0
     }
 
-    // MARK: - Date Parsing (robust)
+    // MARK: - Date Parsing
 
     private func parseHealthDate(_ string: String) -> Date? {
         guard !string.isEmpty else { return nil }
 
-        // Try formats in order of likelihood
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
 
         let formats = [
-            "yyyy-MM-dd HH:mm:ss Z",       // 2026-05-29 08:12:00 +0800
-            "yyyy-MM-dd HH:mm:ss xx",       // 2026-05-29 08:12:00 +08:00
-            "yyyy-MM-dd'T'HH:mm:ssZ",       // 2026-05-29T08:12:00+0800
-            "yyyy-MM-dd'T'HH:mm:ssXXXXX",   // 2026-05-29T08:12:00+08:00
-            "yyyy-MM-dd'T'HH:mm:ss",        // 2026-05-29T08:12:00 (no tz)
-            "yyyy-MM-dd HH:mm:ss",          // 2026-05-29 08:12:00 (no tz)
+            "yyyy-MM-dd HH:mm:ss Z",
+            "yyyy-MM-dd HH:mm:ss xx",
+            "yyyy-MM-dd'T'HH:mm:ssZ",
+            "yyyy-MM-dd'T'HH:mm:ssXXXXX",
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd HH:mm:ss",
         ]
 
         for format in formats {
             formatter.dateFormat = format
-            if let date = formatter.date(from: string) {
-                return date
-            }
+            if let date = formatter.date(from: string) { return date }
         }
 
-        // ISO8601 as last resort
         let isoFormatter = ISO8601DateFormatter()
         isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = isoFormatter.date(from: string) { return date }
@@ -365,52 +413,130 @@ final class AppleHealthExportParser: NSObject, XMLParserDelegate {
         return nil
     }
 
-    // MARK: - Workout Type Mapping (comprehensive)
+    // MARK: - Workout Type Mapping
+
+    private let workoutMapping: [String: String] = [
+        "HKWorkoutActivityTypeRunning": "Running",
+        "HKWorkoutActivityTypeWalking": "Walking",
+        "HKWorkoutActivityTypeCycling": "Cycling",
+        "HKWorkoutActivityTypeTraditionalStrengthTraining": "Strength Training",
+        "HKWorkoutActivityTypeFunctionalStrengthTraining": "Functional Strength",
+        "HKWorkoutActivityTypeSwimming": "Swimming",
+        "HKWorkoutActivityTypeHiking": "Hiking",
+        "HKWorkoutActivityTypeYoga": "Yoga",
+        "HKWorkoutActivityTypeHighIntensityIntervalTraining": "HIIT",
+        "HKWorkoutActivityTypeCrossTraining": "Cross Training",
+        "HKWorkoutActivityTypeElliptical": "Elliptical",
+        "HKWorkoutActivityTypeRower": "Rowing",
+        "HKWorkoutActivityTypeStairClimbing": "Stair Climbing",
+        "HKWorkoutActivityTypeDance": "Dance",
+        "HKWorkoutActivityTypePilates": "Pilates",
+        "HKWorkoutActivityTypeTaiChi": "Tai Chi",
+        "HKWorkoutActivityTypeMixedCardio": "Mixed Cardio",
+        "HKWorkoutActivityTypePlay": "Play",
+        "HKWorkoutActivityTypeOther": "Other",
+    ]
 
     private func normalizeWorkoutType(_ raw: String) -> String {
         if raw.isEmpty { return "Other" }
-
-        let mapping: [String: String] = [
-            "HKWorkoutActivityTypeRunning": "Running",
-            "HKWorkoutActivityTypeWalking": "Walking",
-            "HKWorkoutActivityTypeCycling": "Cycling",
-            "HKWorkoutActivityTypeTraditionalStrengthTraining": "Strength Training",
-            "HKWorkoutActivityTypeFunctionalStrengthTraining": "Functional Strength",
-            "HKWorkoutActivityTypeSwimming": "Swimming",
-            "HKWorkoutActivityTypeHiking": "Hiking",
-            "HKWorkoutActivityTypeYoga": "Yoga",
-            "HKWorkoutActivityTypeHighIntensityIntervalTraining": "HIIT",
-            "HKWorkoutActivityTypeCrossTraining": "Cross Training",
-            "HKWorkoutActivityTypeElliptical": "Elliptical",
-            "HKWorkoutActivityTypeRower": "Rowing",
-            "HKWorkoutActivityTypeStairClimbing": "Stair Climbing",
-            "HKWorkoutActivityTypeDance": "Dance",
-            "HKWorkoutActivityTypePilates": "Pilates",
-            "HKWorkoutActivityTypeTaiChi": "Tai Chi",
-            "HKWorkoutActivityTypeMixedCardio": "Mixed Cardio",
-            "HKWorkoutActivityTypePlay": "Play",
-            "HKWorkoutActivityTypeOther": "Other",
-        ]
-
-        if let mapped = mapping[raw] {
-            return mapped
+        if let mapped = workoutMapping[raw] { return mapped }
+        for (key, value) in workoutMapping {
+            if raw.caseInsensitiveCompare(key) == .orderedSame { return value }
         }
-
-        // Case-insensitive fallback
-        for (key, value) in mapping {
-            if raw.caseInsensitiveCompare(key) == .orderedSame {
-                return value
-            }
-        }
-
-        // Try stripping prefix
         let stripped = raw.replacingOccurrences(of: "HKWorkoutActivityType", with: "")
         if !stripped.isEmpty && stripped != raw {
             return stripped.capitalizedCamelCase()
         }
-
         return "Other"
     }
+}
+
+// MARK: - Progress Tracking InputStream
+
+/// InputStream wrapper that tracks bytes read for import progress reporting.
+final class ProgressTrackingInputStream: InputStream {
+    private let fileHandle: FileHandle
+    private let totalSize: Int64
+    private(set) var bytesRead: Int64 = 0
+    private var _streamStatus: Stream.Status = .notOpen
+    private var _streamError: Error?
+    private var pendingData = Data()
+    private var pendingOffset = 0
+
+    override var streamStatus: Stream.Status { _streamStatus }
+    override var streamError: Error? { _streamError }
+    override var hasBytesAvailable: Bool {
+        if pendingOffset < pendingData.count { return true }
+        do {
+            let remaining = try fileHandle.offset()
+            return remaining < totalSize
+        } catch { return false }
+    }
+
+    init(fileHandle: FileHandle, totalSize: Int64) {
+        self.fileHandle = fileHandle
+        self.totalSize = totalSize
+        super.init(data: Data()) // dummy
+        _streamStatus = .notOpen
+    }
+
+    override func open() {
+        _streamStatus = .open
+        bytesRead = 0
+        pendingData = Data()
+        pendingOffset = 0
+    }
+
+    override func close() {
+        _streamStatus = .closed
+    }
+
+    override func read(_ buffer: UnsafeMutablePointer<UInt8>, maxLength len: Int) -> Int {
+        guard _streamStatus == .open else { return -1 }
+
+        // Serve pending data first
+        if pendingOffset < pendingData.count {
+            let available = pendingData.count - pendingOffset
+            let toCopy = min(available, len)
+            pendingData.copyBytes(to: buffer, from: pendingOffset..<pendingOffset + toCopy)
+            pendingOffset += toCopy
+            if pendingOffset >= pendingData.count {
+                pendingData = Data()
+                pendingOffset = 0
+            }
+            return toCopy
+        }
+
+        // Read next chunk from file
+        do {
+            let chunkSize = min(len, 65536) // 64KB chunks
+            if let chunk = try fileHandle.read(upToCount: chunkSize), !chunk.isEmpty {
+                bytesRead += Int64(chunk.count)
+
+                // Copy directly to buffer
+                chunk.copyBytes(to: buffer, count: chunk.count)
+
+                // Also buffer for re-reads
+                pendingData = chunk
+                pendingOffset = chunk.count
+
+                return chunk.count
+            } else {
+                _streamStatus = .atEnd
+                return 0
+            }
+        } catch {
+            _streamError = error
+            _streamStatus = .error
+            return -1
+        }
+    }
+
+    override func schedule(in aRunLoop: RunLoop, forMode mode: RunLoop.Mode) {}
+    override func remove(from aRunLoop: RunLoop, forMode mode: RunLoop.Mode) {}
+
+    override func property(forKey key: Stream.PropertyKey) -> Any? { nil }
+    override func setProperty(_ property: Any?, forKey key: Stream.PropertyKey) -> Bool { false }
 }
 
 // MARK: - Parse Result Types
@@ -459,12 +585,9 @@ struct ParsedSleep {
 
 private extension String {
     func capitalizedCamelCase() -> String {
-        // Convert "TraditionalStrengthTraining" -> "Traditional Strength Training"
         var result = ""
         for char in self {
-            if char.isUppercase && !result.isEmpty {
-                result.append(" ")
-            }
+            if char.isUppercase && !result.isEmpty { result.append(" ") }
             result.append(char)
         }
         return result

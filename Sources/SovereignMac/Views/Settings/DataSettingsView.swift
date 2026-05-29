@@ -139,6 +139,40 @@ struct DataSettingsView: View {
                 }
             }
 
+            Section("导入设置") {
+                HStack {
+                    Text("默认导入模式")
+                    Spacer()
+                    Text("增量导入（跳过已有日期数据）")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                if let ctx = healthStore.modelContext,
+                   let cp = ImportCoordinator.shared.latestCheckpoint(context: ctx) {
+                    HStack {
+                        Text("上次导入")
+                        Spacer()
+                        Text("\(cp.fileName) · \(cp.lastSuccessfulImportAt, style: .date)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    HStack {
+                        Text("最新数据至")
+                        Spacer()
+                        Text(cp.formattedEndDate)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                Button("重置导入断点") {
+                    if let ctx = healthStore.modelContext {
+                        ImportCoordinator.shared.resetCheckpoint(context: ctx)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
             Section("数据管理") {
                 Button("清空 Demo 数据") {
                     clearTarget = .demoData

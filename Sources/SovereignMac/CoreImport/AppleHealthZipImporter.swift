@@ -39,8 +39,9 @@ final class AppleHealthZipImporter {
             throw ImportError(message: "无法读取 export.xml", underlyingError: nil)
         }
 
-        parser.onProgress = { [weak self] p in
-            self?.onProgress?(0.6 + p * 0.35, "解析中...")
+        parser.onRichProgress = { [weak self] parsedBytes, scanned, imported, skipped, type, date in
+            let pct = Double(parsedBytes) / Double(max(parser.currentBytePosition, 1))
+            self?.onProgress?(0.6 + min(pct, 0.99) * 0.35, "解析中...")
         }
 
         if cancellation?() == true { parser.isCancelled = true }

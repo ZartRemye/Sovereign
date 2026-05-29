@@ -17,6 +17,7 @@ struct SovereignMacApp: App {
             AlertRecord.self,
             AIAnalysisCache.self,
             ImportDiagnostic.self,
+            ImportCheckpoint.self,
         ])
         return try! ModelContainer(for: schema)
     }()

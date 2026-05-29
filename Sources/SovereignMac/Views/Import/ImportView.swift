@@ -3,19 +3,10 @@ import UniformTypeIdentifiers
 
 struct ImportView: View {
     @EnvironmentObject var healthStore: MacHealthStore
-    @State private var importStatus: ImportStatus = .idle
-    @State private var importProgress: Double = 0
-    @State private var importMessage: String = ""
-    @State private var importResult: DetailedImportResult?
+    @StateObject private var coordinator = ImportCoordinator.shared
     @State private var isDragging: Bool = false
     @State private var showDiagnostics: Bool = false
-
-    enum ImportStatus: Equatable {
-        case idle
-        case importing
-        case completed
-        case error(String)
-    }
+    @State private var importMode: ImportMode = .incremental
 
     var body: some View {
         ScrollView {
@@ -24,39 +15,36 @@ struct ImportView: View {
                     .font(AppTypography.largeTitle)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
+                // Import mode picker
+                importModePicker
+
                 // Current data status
                 dataStatusCard
 
                 // Drop zone
                 ImportDropZone(
                     isDragging: $isDragging,
-                    isImporting: importStatus == .importing,
+                    isImporting: coordinator.isImporting,
                     onFileSelected: importFile
                 )
 
-                // Progress
-                if importStatus == .importing {
-                    VStack(spacing: AppSpacing.md) {
-                        ProgressView(value: importProgress)
-                            .frame(width: 300)
-                        Text(importMessage)
-                            .font(AppTypography.callout)
-                            .foregroundColor(.secondary)
-
-                        Button("取消") {
-                            importStatus = .idle
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                    .padding()
+                // Progress — rich display
+                if coordinator.isImporting || coordinator.state.phase == .parsingXML {
+                    importProgressCard
                 }
 
                 // Result
-                if importStatus == .completed, let result = importResult {
+                if case .completed = coordinator.state, let result = coordinator.latestResult {
                     ImportResultDetailCard(result: result)
+
+                    Button("清除结果") {
+                        coordinator.clearLastResult()
+                    }
+                    .buttonStyle(.borderless)
+                    .font(AppTypography.caption)
                 }
 
-                if case .error(let message) = importStatus {
+                if case .failed = coordinator.state, let error = coordinator.errorMessage {
                     CardView {
                         HStack {
                             Image(systemName: "xmark.circle.fill")
@@ -64,12 +52,17 @@ struct ImportView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("导入失败")
                                     .font(AppTypography.headline)
-                                Text(message)
+                                Text(error)
                                     .font(AppTypography.callout)
                                     .foregroundColor(.secondary)
                             }
                         }
                     }
+                    Button("清除错误") {
+                        coordinator.clearLastResult()
+                    }
+                    .buttonStyle(.borderless)
+                    .font(AppTypography.caption)
                 }
 
                 // Import diagnostics
@@ -88,17 +81,42 @@ struct ImportView: View {
                             InstructionStep(number: "4", text: "通过 AirDrop、iCloud 或邮件发送到 Mac")
                             InstructionStep(number: "5", text: "将 export.zip 或 export.xml 拖放到上方区域")
                         }
-
-                        Text("Sovereign 解析：步数、心率、静息心率、HRV、活动能量、运动时间、距离、最大摄氧量、睡眠分析、运动记录、体重、身高。")
-                            .font(AppTypography.caption)
-                            .foregroundColor(.secondary)
-                            .padding(.top, AppSpacing.sm)
                     }
                 }
             }
             .padding(AppSpacing.xl)
         }
         .navigationTitle("数据导入")
+    }
+
+    // MARK: - Import Mode Picker
+
+    private var importModePicker: some View {
+        HStack(spacing: AppSpacing.md) {
+            Text("导入模式")
+                .font(AppTypography.callout)
+
+            Picker("", selection: $importMode) {
+                Text("增量导入").tag(ImportMode.incremental)
+                Text("全量重建").tag(ImportMode.fullRebuild)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 200)
+            .disabled(coordinator.isImporting)
+
+            Spacer()
+
+            // Checkpoint info
+            if importMode == .incremental {
+                if let ctx = healthStore.modelContext,
+                   let cp = ImportCoordinator.shared.latestCheckpoint(context: ctx) {
+                    Text("已有数据至 \(cp.formattedEndDate)")
+                        .font(AppTypography.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal)
     }
 
     // MARK: - Data Status
@@ -144,6 +162,100 @@ struct ImportView: View {
         }
     }
 
+    // MARK: - Import Progress Card
+
+    private var importProgressCard: some View {
+        CardView {
+            VStack(alignment: .leading, spacing: AppSpacing.md) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(coordinator.progress.phase.rawValue)
+                            .font(AppTypography.headline)
+                        if !coordinator.progress.message.isEmpty {
+                            Text(coordinator.progress.message)
+                                .font(AppTypography.callout)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    Spacer()
+                    Text("\(coordinator.progress.percentComplete)%")
+                        .font(AppTypography.title2)
+                        .foregroundColor(.accentColor)
+                }
+
+                // Size bar
+                VStack(spacing: 4) {
+                    ProgressView(value: coordinator.progress.fractionComplete)
+                        .tint(.accentColor)
+
+                    HStack {
+                        Text("\(coordinator.progress.formattedProcessedSize) / \(coordinator.progress.formattedTotalSize)")
+                            .font(AppTypography.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("\(coordinator.progress.formattedSpeed) · 剩余 \(coordinator.progress.formattedETA)")
+                            .font(AppTypography.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Divider()
+
+                // Record counters
+                HStack(spacing: AppSpacing.xl) {
+                    counterView(label: "已扫描", value: coordinator.progress.formattedScanned)
+                    counterView(label: "已导入", value: coordinator.progress.formattedImported)
+                    counterView(label: "已跳过", value: coordinator.progress.formattedSkipped)
+                    if coordinator.progress.workoutsParsed > 0 {
+                        counterView(label: "运动", value: "\(coordinator.progress.workoutsParsed)")
+                    }
+                    if coordinator.progress.sleepRecordsParsed > 0 {
+                        counterView(label: "睡眠", value: "\(coordinator.progress.sleepRecordsParsed)")
+                    }
+                }
+
+                if !coordinator.progress.currentRecordType.isEmpty {
+                    HStack {
+                        Text("当前: \(coordinator.progress.currentRecordType)")
+                            .font(AppTypography.caption2)
+                            .foregroundColor(.secondary)
+                        if let date = coordinator.progress.currentRecordDate {
+                            Text("· \(date, style: .date)")
+                                .font(AppTypography.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                // Background hint
+                HStack(spacing: 4) {
+                    Image(systemName: "info.circle")
+                        .font(.caption2)
+                    Text("你可以切换页面，导入会继续。")
+                        .font(AppTypography.caption2)
+                }
+                .foregroundColor(.secondary.opacity(0.6))
+
+                // Cancel
+                Button("取消导入") {
+                    coordinator.cancelImport()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+    }
+
+    private func counterView(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(AppTypography.headline)
+            Text(label)
+                .font(AppTypography.caption2)
+                .foregroundColor(.secondary)
+        }
+    }
+
     // MARK: - Diagnostics
 
     private var importDiagnosticsSection: some View {
@@ -164,7 +276,7 @@ struct ImportView: View {
                     ImportDiagnosticsCard(diagnostic: diag)
                 } else {
                     CardView {
-                        Text("尚未导入任何数据。导入 Apple Health export.xml 或 ZIP 后将在此显示导入诊断信息。")
+                        Text("尚未导入任何数据。")
                             .font(AppTypography.callout)
                             .foregroundColor(.secondary)
                     }
@@ -176,22 +288,8 @@ struct ImportView: View {
     // MARK: - Import Action
 
     private func importFile(url: URL) {
-        importStatus = .importing
-        importProgress = 0
-        importMessage = "准备导入..."
-        importResult = nil
-
         Task {
-            do {
-                let result = try await healthStore.importHealthData(from: url) { progress, message in
-                    importProgress = progress
-                    importMessage = message
-                }
-                importResult = result
-                importStatus = .completed
-            } catch {
-                importStatus = .error(error.localizedDescription)
-            }
+            await coordinator.startImport(from: url, mode: importMode)
         }
     }
 
@@ -231,22 +329,10 @@ struct ImportResultDetailCard: View {
                 Divider()
 
                 HStack(spacing: AppSpacing.xl) {
-                    VStack(alignment: .leading) {
-                        Text("\(result.totalMetricSamples)").font(AppTypography.title2)
-                        Text("指标样本").font(AppTypography.caption).foregroundColor(.secondary)
-                    }
-                    VStack(alignment: .leading) {
-                        Text("\(result.totalWorkouts)").font(AppTypography.title2)
-                        Text("运动记录").font(AppTypography.caption).foregroundColor(.secondary)
-                    }
-                    VStack(alignment: .leading) {
-                        Text("\(result.totalSleepSessions)").font(AppTypography.title2)
-                        Text("睡眠记录").font(AppTypography.caption).foregroundColor(.secondary)
-                    }
-                    VStack(alignment: .leading) {
-                        Text("\(result.totalDailySummaries)").font(AppTypography.title2)
-                        Text("每日摘要").font(AppTypography.caption).foregroundColor(.secondary)
-                    }
+                    statView("指标样本", "\(result.totalMetricSamples)")
+                    statView("运动记录", "\(result.totalWorkouts)")
+                    statView("睡眠记录", "\(result.totalSleepSessions)")
+                    statView("每日摘要", "\(result.totalDailySummaries)")
                 }
 
                 if let start = result.dateRangeStart, let end = result.dateRangeEnd {
@@ -255,6 +341,13 @@ struct ImportResultDetailCard: View {
                         .foregroundColor(.secondary)
                 }
             }
+        }
+    }
+
+    private func statView(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading) {
+            Text(value).font(AppTypography.title2)
+            Text(label).font(AppTypography.caption).foregroundColor(.secondary)
         }
     }
 
@@ -309,12 +402,9 @@ struct ImportDiagnosticsCard: View {
                         .font(AppTypography.headline)
                     ForEach(diagnostic.parsedByType.sorted(by: { $0.value > $1.value }), id: \.key) { type, count in
                         HStack {
-                            Text(type)
-                                .font(AppTypography.caption)
+                            Text(type).font(AppTypography.caption)
                             Spacer()
-                            Text("\(count) 条")
-                                .font(AppTypography.caption)
-                                .foregroundColor(.secondary)
+                            Text("\(count) 条").font(AppTypography.caption).foregroundColor(.secondary)
                         }
                     }
                 }
@@ -325,24 +415,11 @@ struct ImportDiagnosticsCard: View {
                         .font(AppTypography.headline)
                     ForEach(diagnostic.skippedReasons.sorted(by: { $0.value > $1.value }), id: \.key) { reason, count in
                         HStack {
-                            Text(reason)
-                                .font(AppTypography.caption)
+                            Text(reason).font(AppTypography.caption)
                             Spacer()
-                            Text("\(count) 条")
-                                .font(AppTypography.caption)
-                                .foregroundColor(.orange)
+                            Text("\(count) 条").font(AppTypography.caption).foregroundColor(.orange)
                         }
                     }
-                }
-
-                Divider()
-                HStack {
-                    Text("数据库当前总量")
-                        .font(AppTypography.caption)
-                    Spacer()
-                    Text("指标: \(diagnostic.totalMetricSamples) · 运动: \(diagnostic.totalWorkouts) · 睡眠: \(diagnostic.totalSleepSessions) · 摘要: \(diagnostic.totalDailySummaries)")
-                        .font(AppTypography.caption)
-                        .foregroundColor(.secondary)
                 }
             }
         }

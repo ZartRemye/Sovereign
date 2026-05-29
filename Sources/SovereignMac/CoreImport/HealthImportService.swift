@@ -2,75 +2,194 @@ import Foundation
 import SwiftData
 
 /// Orchestrates import of Apple Health data — parses, normalizes, deduplicates, persists, builds summaries.
+/// Supports both full rebuild and incremental import modes.
 actor HealthImportService {
     static let shared = HealthImportService()
     private let normalizer = HealthDataNormalizer()
 
     private init() {}
 
-    typealias ImportProgressHandler = (Double, String) -> Void
+    typealias RichProgressHandler = (ImportProgress) -> Void
 
-    // MARK: - Full Import Pipeline (parse + normalize + persist)
+    // MARK: - Full Import Pipeline (with rich progress)
 
     func importAndPersist(
         at url: URL,
         into context: ModelContext,
-        progress: @escaping ImportProgressHandler
+        mode: ImportMode = .incremental,
+        progress: @escaping RichProgressHandler,
+        isCancelled: @escaping () -> Bool
     ) async throws -> DetailedImportResult {
-        // Phase 1: Parse
+        var prog = ImportProgress()
+        prog.startedAt = Date()
+        prog.fileName = url.lastPathComponent
+        prog.fileSizeBytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        var estimator = ImportETAEstimator()
+
+        // --- Phase 1: Parse ---
         let parseResult: ImportParseResult
+
         if url.pathExtension.lowercased() == "zip" {
+            prog.phase = .unzipping
+            prog.message = "Unzipping Apple Health export..."
+            progress(prog)
+
             let importer = AppleHealthZipImporter()
-            parseResult = try await importer.importZip(at: url, progress: progress)
-        } else if url.lastPathComponent == "export.xml" || url.pathExtension.lowercased() == "xml" {
-            progress(0.0, "解析 XML...")
-            guard let parser = AppleHealthExportParser(fileURL: url) else {
+            parseResult = try await importer.importZip(at: url, progress: { pct, msg in
+                prog.phase = .unzipping
+                prog.message = msg
+                prog.processedBytes = Int64(Double(prog.fileSizeBytes) * pct)
+                progress(prog)
+            })
+        } else {
+            prog.phase = .openingXML
+            prog.message = "Opening export.xml..."
+            progress(prog)
+
+            guard let fileHandle = try? FileHandle(forReadingFrom: url) else {
                 throw ImportError(message: "无法读取文件", underlyingError: nil)
             }
-            parser.onProgress = { p in progress(0.05 + p * 0.45, "解析中...") }
+            let actualSize = try fileHandle.seekToEnd()
+            try fileHandle.seek(toOffset: 0)
+            prog.fileSizeBytes = Int64(actualSize)
+
+            guard let parser = AppleHealthExportParser(stream: fileHandle, estimatedSize: prog.fileSizeBytes) else {
+                throw ImportError(message: "无法创建 XML 解析器", underlyingError: nil)
+            }
+
+            prog.phase = .parsingXML
+            prog.message = "Parsing XML records..."
+            progress(prog)
+
+            var lastProgressUpdate = Date()
+            parser.onRichProgress = { [weak self] parsedBytes, scanned, imported, skipped, currentType, currentDate in
+                let now = Date()
+                guard now.timeIntervalSince(lastProgressUpdate) > 0.3 else { return }
+                lastProgressUpdate = now
+
+                prog.processedBytes = parsedBytes
+                prog.recordsScanned = scanned
+                prog.recordsImported = imported
+                prog.recordsSkipped = skipped
+                prog.currentRecordType = currentType
+                prog.currentRecordDate = currentDate
+                prog.phase = .parsingXML
+                prog.message = "Parsing \(currentType) · \(currentDate?.formatted(date: .numeric, time: .omitted) ?? "")"
+
+                let eta = estimator.update(processedBytes: parsedBytes, totalBytes: prog.fileSizeBytes, now: now)
+                prog.bytesPerSecond = eta.speed
+                prog.estimatedSecondsRemaining = eta.remaining
+                prog.lastUpdateAt = now
+
+                progress(prog)
+            }
+
+            parser.onWorkoutParsed = {
+                prog.workoutsParsed += 1
+            }
+
+            parser.onSleepParsed = {
+                prog.sleepRecordsParsed += 1
+            }
+
             parseResult = parser.parse()
-        } else {
-            throw ImportError(message: "不支持的文件格式。请导入 export.xml 或 Apple Health 导出的 ZIP 文件。", underlyingError: nil)
+        }
+
+        if isCancelled() {
+            throw CancellationError()
         }
 
         if let error = parseResult.parseError, parseResult.metrics.isEmpty {
             throw error
         }
 
-        // Phase 2: Normalize
-        progress(0.50, "标准化数据...")
+        // --- Phase 2: Filter for incremental ---
+        let metricsToProcess: [ParsedHealthMetric]
+        let filterSkipCount: Int64
+
+        if mode == .incremental, let checkpoint = await latestCheckpoint(context: context) {
+            prog.phase = .filteringIncrementalData
+            prog.message = "Filtering new records since \(checkpoint.formattedEndDate)..."
+            progress(prog)
+
+            let cutoff = checkpoint.latestSampleEndDate.addingTimeInterval(-86400) // 1 day buffer
+            metricsToProcess = parseResult.metrics.filter { $0.startDate > cutoff }
+            filterSkipCount = Int64(parseResult.metrics.count - metricsToProcess.count)
+            prog.recordsSkipped += filterSkipCount
+        } else {
+            metricsToProcess = parseResult.metrics
+            filterSkipCount = 0
+        }
+
+        // --- Phase 3: Normalize ---
+        prog.phase = .normalizing
+        prog.message = "Normalizing \(metricsToProcess.count) records..."
+        progress(prog)
+
+        let allWorkouts = parseResult.workouts
+        let allSleep = parseResult.sleepSessions
         let (normalizedMetrics, normalizedWorkouts, normalizedSleep) = normalizer.normalize(
-            metrics: parseResult.metrics,
-            workouts: parseResult.workouts,
-            sleepRecords: parseResult.sleepSessions
+            metrics: metricsToProcess,
+            workouts: allWorkouts,
+            sleepRecords: allSleep
         )
 
-        // Phase 3: Dedup and persist
-        progress(0.60, "去重并保存...")
+        // --- Phase 4: Dedup and persist ---
+        prog.phase = .deduplicating
+        prog.message = "Deduplicating against database..."
+        progress(prog)
+
         let stats = await deduplicateAndPersist(
             metrics: normalizedMetrics,
             workouts: normalizedWorkouts,
             sleep: normalizedSleep,
-            into: context
+            into: context,
+            progress: { deduped in
+                prog.recordsDeduplicated = deduped
+                progress(prog)
+            }
         )
 
-        // Phase 4: Build daily summaries
-        progress(0.80, "生成每日摘要...")
+        // --- Phase 5: Build daily summaries ---
+        prog.phase = .buildingDailySummaries
+        prog.message = "Building daily summaries..."
+        progress(prog)
+
+        let summaryStartDate: Date
+        if mode == .incremental, let checkpoint = await latestCheckpoint(context: context) {
+            summaryStartDate = checkpoint.latestSampleEndDate.addingTimeInterval(-86400 * 7)
+        } else {
+            summaryStartDate = stats.dateRangeStart ?? Date().addingTimeInterval(-90 * 86400)
+        }
+
         let summaries = await buildDailySummaries(
-            from: stats.dateRangeStart ?? Date().addingTimeInterval(-90 * 86400),
+            from: summaryStartDate,
             to: Date(),
-            context: context
+            context: context,
+            mode: mode
         )
 
-        progress(0.95, "保存摘要...")
-        // Delete old summaries and insert new ones
-        try? context.delete(model: DailySummary.self)
+        // --- Phase 6: Save ---
+        prog.phase = .saving
+        prog.message = "Saving \(summaries.count) daily summaries..."
+        progress(prog)
+
+        if mode == .fullRebuild {
+            try? context.delete(model: DailySummary.self)
+        } else {
+            // Delete only affected date range summaries
+            let deletePredicate = #Predicate<DailySummary> { $0.date >= summaryStartDate }
+            try? context.delete(model: DailySummary.self, where: deletePredicate)
+        }
+
         for summary in summaries {
             context.insert(summary)
         }
         try? context.save()
 
-        progress(1.0, "完成")
+        prog.phase = .completed
+        prog.message = "Import complete"
+        progress(prog)
 
         return DetailedImportResult(
             fileName: url.lastPathComponent,
@@ -89,39 +208,12 @@ actor HealthImportService {
         )
     }
 
-    // MARK: - Legacy import (parse only, for diagnostics)
+    // MARK: - Checkpoint
 
-    func importFile(
-        at url: URL,
-        progress: @escaping ImportProgressHandler
-    ) async throws -> ImportSummary {
-        let parseResult: ImportParseResult
-
-        if url.pathExtension.lowercased() == "zip" {
-            let importer = AppleHealthZipImporter()
-            parseResult = try await importer.importZip(at: url, progress: progress)
-        } else if url.lastPathComponent == "export.xml" || url.pathExtension.lowercased() == "xml" {
-            progress(0.1, "解析 XML...")
-            guard let parser = AppleHealthExportParser(fileURL: url) else {
-                throw ImportError(message: "无法读取文件", underlyingError: nil)
-            }
-            parser.onProgress = { p in progress(0.1 + p * 0.85, "解析中...") }
-            parseResult = parser.parse()
-        } else {
-            throw ImportError(message: "不支持的文件格式。请导入 export.xml 或 Apple Health 导出的 ZIP 文件。", underlyingError: nil)
-        }
-
-        if let error = parseResult.parseError {
-            throw error
-        }
-
-        return ImportSummary(
-            metricSamples: parseResult.metrics.count,
-            workoutSessions: parseResult.workouts.count,
-            sleepSessions: parseResult.sleepSessions.count,
-            dateRange: computeDateRange(metrics: parseResult.metrics),
-            fileName: url.lastPathComponent
-        )
+    private func latestCheckpoint(context: ModelContext) async -> ImportCheckpoint? {
+        var descriptor = FetchDescriptor<ImportCheckpoint>(sortBy: [SortDescriptor<ImportCheckpoint>(\.lastSuccessfulImportAt, order: .reverse)])
+        descriptor.fetchLimit = 1
+        return (try? context.fetch(descriptor))?.first
     }
 
     // MARK: - Normalize (public for external use)
@@ -143,11 +235,13 @@ actor HealthImportService {
         metrics: [HealthMetricSample],
         workouts: [WorkoutSession],
         sleep: [SleepSession],
-        into context: ModelContext
+        into context: ModelContext,
+        progress: ((Int64) -> Void)? = nil
     ) async -> PersistStats {
         var savedMetrics = 0
         var savedWorkouts = 0
         var savedSleep = 0
+        var deduped: Int64 = 0
         var savedByType: [String: Int] = [:]
         var skippedReasons: [String: Int] = [:]
         var dateRangeStart: Date?
@@ -162,57 +256,64 @@ actor HealthImportService {
         let workoutFingerprints = Set(existingWorkouts.map { workoutFingerprint($0) })
         let sleepFingerprints = Set(existingSleep.map { sleepFingerprint($0) })
 
-        // Insert metrics with dedup
+        // Batch insert for performance
+        var metricBatch: [HealthMetricSample] = []
+        var workoutBatch: [WorkoutSession] = []
+        var sleepBatch: [SleepSession] = []
+
         for metric in metrics {
             let fp = metricFingerprint(metric)
             if metricFingerprints.contains(fp) {
                 skippedReasons["重复数据", default: 0] += 1
+                deduped += 1
                 continue
             }
-            context.insert(metric)
+            metricBatch.append(metric)
             savedMetrics += 1
             savedByType[metric.metricTypeRaw, default: 0] += 1
 
-            if dateRangeStart == nil || metric.date < dateRangeStart! {
-                dateRangeStart = metric.date
-            }
-            if dateRangeEnd == nil || metric.date > dateRangeEnd! {
-                dateRangeEnd = metric.date
+            if dateRangeStart == nil || metric.date < dateRangeStart! { dateRangeStart = metric.date }
+            if dateRangeEnd == nil || metric.date > dateRangeEnd! { dateRangeEnd = metric.date }
+
+            // Flush batch periodically
+            if metricBatch.count >= 500 {
+                for m in metricBatch { context.insert(m) }
+                metricBatch.removeAll()
+                try? context.save()
+                progress?(deduped)
             }
         }
+        for m in metricBatch { context.insert(m) }
 
-        // Insert workouts with dedup
         for workout in workouts {
             let fp = workoutFingerprint(workout)
             if workoutFingerprints.contains(fp) {
                 skippedReasons["重复运动", default: 0] += 1
+                deduped += 1
                 continue
             }
-            context.insert(workout)
+            workoutBatch.append(workout)
             savedWorkouts += 1
             savedByType["Workout_\(workout.workoutTypeRaw)", default: 0] += 1
-
-            if dateRangeStart == nil || workout.startDate < dateRangeStart! {
-                dateRangeStart = workout.startDate
-            }
-            if dateRangeEnd == nil || workout.endDate > dateRangeEnd! {
-                dateRangeEnd = workout.endDate
-            }
+            if workoutBatch.count >= 100 { for w in workoutBatch { context.insert(w) }; workoutBatch.removeAll() }
         }
+        for w in workoutBatch { context.insert(w) }
 
-        // Insert sleep with dedup
         for s in sleep {
             let fp = sleepFingerprint(s)
             if sleepFingerprints.contains(fp) {
                 skippedReasons["重复睡眠", default: 0] += 1
+                deduped += 1
                 continue
             }
-            context.insert(s)
+            sleepBatch.append(s)
             savedSleep += 1
-            savedByType["SleepSession", default: 0] += 1
+            if sleepBatch.count >= 100 { for s in sleepBatch { context.insert(s) }; sleepBatch.removeAll() }
         }
+        for s in sleepBatch { context.insert(s) }
 
         try? context.save()
+        progress?(deduped)
 
         return PersistStats(
             savedMetrics: savedMetrics,
@@ -244,7 +345,8 @@ actor HealthImportService {
     private func buildDailySummaries(
         from startDate: Date,
         to endDate: Date,
-        context: ModelContext
+        context: ModelContext,
+        mode: ImportMode = .fullRebuild
     ) async -> [DailySummary] {
         let calendar = Calendar.current
         let allMetrics = (try? context.fetch(FetchDescriptor<HealthMetricSample>())) ?? []
@@ -269,15 +371,6 @@ actor HealthImportService {
         }
 
         return summaries
-    }
-
-    // MARK: - Helpers
-
-    private func computeDateRange(metrics: [ParsedHealthMetric]) -> (start: Date, end: Date)? {
-        guard let first = metrics.first?.startDate, let last = metrics.last?.endDate else {
-            return nil
-        }
-        return (first, last)
     }
 }
 

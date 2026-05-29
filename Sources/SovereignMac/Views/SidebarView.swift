@@ -3,6 +3,8 @@ import SwiftUI
 struct SidebarView: View {
     @Binding var selectedTab: NavigationTab
     @EnvironmentObject var healthStore: MacHealthStore
+    @StateObject private var importCoordinator = ImportCoordinator.shared
+    @State private var runtimeStatus: AIRuntimeStatus = AIRuntimeStatus()
 
     var body: some View {
         List(selection: $selectedTab) {
@@ -25,38 +27,96 @@ struct SidebarView: View {
                     .tag(NavigationTab.settings)
             }
 
-            Section("状态") {
-                VStack(alignment: .leading, spacing: 6) {
+            Section("Status") {
+                // Data source
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(dataSourceColor)
+                        .frame(width: 7, height: 7)
+                    Text("Data: \(dataSourceLabel)")
+                        .font(AppTypography.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                // Import status
+                if importCoordinator.isImporting {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .scaleEffect(0.6)
+                                .frame(width: 12, height: 12)
+                            Text("Import: \(importCoordinator.progress.percentComplete)%")
+                                .font(AppTypography.caption)
+                                .foregroundColor(.accentColor)
+                        }
+                        Text("\(importCoordinator.progress.formattedProcessedSize) / \(importCoordinator.progress.formattedTotalSize)")
+                            .font(AppTypography.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                } else if case .completed = importCoordinator.state {
                     HStack(spacing: 6) {
-                        Circle()
-                            .fill(dataSourceColor)
-                            .frame(width: 7, height: 7)
-                        Text(dataSourceText)
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption2)
+                            .foregroundColor(.green)
+                        Text("Import: Completed")
                             .font(AppTypography.caption)
                             .foregroundColor(.secondary)
                     }
-
-                    if !healthStore.dailySummaries.isEmpty {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(healthStore.dbSummaryCount) 天摘要")
-                                .font(AppTypography.caption2)
-                                .foregroundColor(.secondary)
-                            Text("\(healthStore.dbWorkoutCount) 次运动")
-                                .font(AppTypography.caption2)
-                                .foregroundColor(.secondary)
-                        }
+                } else if case .failed = importCoordinator.state {
+                    HStack(spacing: 6) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.caption2)
+                            .foregroundColor(.red)
+                        Text("Import: Failed")
+                            .font(AppTypography.caption)
+                            .foregroundColor(.secondary)
                     }
+                } else {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Color.gray.opacity(0.4))
+                            .frame(width: 7, height: 7)
+                        Text("Import: Idle")
+                            .font(AppTypography.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
 
-                    if let lastAnalysis = healthStore.lastAnalysisDate {
-                        Text("分析于 \(formatRelative(lastAnalysis))")
+                // AI mode
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(aiModeColor)
+                        .frame(width: 7, height: 7)
+                    Text("AI: \(runtimeStatus.providerMode.shortLabel)")
+                        .font(AppTypography.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                // Data counts
+                if !healthStore.dailySummaries.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(healthStore.dbSummaryCount) days · \(healthStore.dbWorkoutCount) workouts")
                             .font(AppTypography.caption2)
                             .foregroundColor(.secondary)
                     }
                 }
-                .padding(.vertical, 4)
+
+                if let lastAnalysis = healthStore.lastAnalysisDate {
+                    Text("Analyzed \(formatRelative(lastAnalysis))")
+                        .font(AppTypography.caption2)
+                        .foregroundColor(.secondary)
+                }
             }
         }
         .listStyle(.sidebar)
+        .task {
+            runtimeStatus = await AIRuntimeStatus.current(dataSource: healthStore.dataSource, summaries: healthStore.dailySummaries)
+        }
+        .onChange(of: healthStore.dataSource) { _ in
+            Task {
+                runtimeStatus = await AIRuntimeStatus.current(dataSource: healthStore.dataSource, summaries: healthStore.dailySummaries)
+            }
+        }
     }
 
     private var dataSourceColor: Color {
@@ -70,14 +130,23 @@ struct SidebarView: View {
         }
     }
 
-    private var dataSourceText: String {
+    private var dataSourceLabel: String {
         switch healthStore.dataSource {
-        case .empty: return "无数据"
-        case .mockLive: return "Demo Data"
+        case .empty: return "Empty"
+        case .mockLive: return "Demo"
         case .appleHealthImport: return "Apple Health"
-        case .iphoneSync: return "iPhone Sync"
-        case .watchLive: return "Watch Live"
-        case .unknown: return "未知"
+        case .iphoneSync: return "iPhone"
+        case .watchLive: return "Watch"
+        case .unknown: return "Unknown"
+        }
+    }
+
+    private var aiModeColor: Color {
+        switch runtimeStatus.providerMode {
+        case .localRules: return .blue
+        case .deepSeek: return .purple
+        case .fallback: return .orange
+        case .disabled: return .gray
         }
     }
 
