@@ -103,6 +103,24 @@ struct AISettingsView: View {
                     .foregroundColor(.secondary)
             }
 
+            Section("生成参数") {
+                let genSettings = AIModelGenerationSettings.load()
+                Stepper("Max Tokens: \(genSettings.maxTokens)", value: Binding(
+                    get: { genSettings.maxTokens },
+                    set: { var s = AIModelGenerationSettings.load(); s.maxTokens = $0; s.save() }
+                ), in: 512...16384, step: 512)
+                Stepper("Temperature: \(String(format: "%.1f", genSettings.temperature))", value: Binding(
+                    get: { genSettings.temperature },
+                    set: { var s = AIModelGenerationSettings.load(); s.temperature = $0; s.save() }
+                ), in: 0.0...1.5, step: 0.1)
+                Toggle("回答被截断时自动继续生成", isOn: Binding(
+                    get: { genSettings.autoContinueWhenTruncated },
+                    set: { var s = AIModelGenerationSettings.load(); s.autoContinueWhenTruncated = $0; s.save() }
+                ))
+                Text("当 DeepSeek 回答因长度限制被截断时，自动发送 continuation 请求继续生成。最多 3 次。")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
             Section("当前 AI 模式") {
                 HStack {
                     Text("模式")

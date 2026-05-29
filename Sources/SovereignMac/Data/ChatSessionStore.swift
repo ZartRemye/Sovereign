@@ -110,7 +110,8 @@ final class ChatSessionStore: ObservableObject {
         activeMessages.append(msg)
     }
 
-    func appendAssistantMessage(markdown: String, runtime: AIRuntimeStatus, evidence: String?) {
+    func appendAssistantMessage(markdown: String, runtime: AIRuntimeStatus, evidence: String?,
+                                 finishReason: String? = nil, isTruncated: Bool = false) {
         guard let ctx = modelContext, let session = activeSession else { return }
         let clean = MarkdownSanitizer.displayMarkdown(from: markdown)
         let plain = MarkdownSanitizer.plainText(from: clean)
@@ -122,13 +123,38 @@ final class ChatSessionStore: ObservableObject {
             evidenceData: evidence,
             isFallback: false,
             providerMode: runtime.providerMode.label,
-            modelName: runtime.modelName
+            modelName: runtime.modelName,
+            status: isTruncated ? "truncated" : "completed",
+            finishReason: finishReason,
+            isPartial: isTruncated
         )
         msg.session = session
         ctx.insert(msg)
         session.updatedAt = Date()
         try? ctx.save()
         activeMessages.append(msg)
+    }
+
+    /// Continue a truncated message by appending new content
+    func continueLastAssistantMessage(additionalMarkdown: String, finishReason: String?) {
+        guard let ctx = modelContext, let last = activeMessages.last, last.role == "assistant" else { return }
+        last.contentMarkdown += "\n\n" + MarkdownSanitizer.displayMarkdown(from: additionalMarkdown)
+        last.contentPlainText = MarkdownSanitizer.plainText(from: last.contentMarkdown)
+        last.finishReason = finishReason
+        last.status = finishReason == "stop" ? "completed" : "truncated"
+        last.continuationCount += 1
+        last.isPartial = (finishReason != "stop")
+        if let session = activeSession { session.updatedAt = Date() }
+        try? ctx.save()
+    }
+
+    func updateLastMessage(finishReason: String?, status: String) {
+        guard let last = activeMessages.last, last.role == "assistant" else { return }
+        last.finishReason = finishReason
+        last.status = status
+        last.isPartial = (status != "completed")
+        if let session = activeSession { session.updatedAt = Date() }
+        try? modelContext?.save()
     }
 
     func appendSystemMessage(_ text: String) {

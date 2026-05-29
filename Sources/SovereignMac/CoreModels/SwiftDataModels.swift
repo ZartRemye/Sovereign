@@ -646,12 +646,18 @@ final class ChatMessageRecord {
     var isFallback: Bool = false
     var providerMode: String?
     var modelName: String?
+    var status: String = "completed"  // drafting / completed / truncated / failed
+    var finishReason: String?          // stop / length / max_tokens / etc.
+    var continuationCount: Int = 0
+    var isPartial: Bool = false
 
     var session: ChatSessionRecord?
 
     init(role: String, contentMarkdown: String, contentPlainText: String = "",
          contextSummary: String? = nil, evidenceData: String? = nil,
-         isFallback: Bool = false, providerMode: String? = nil, modelName: String? = nil) {
+         isFallback: Bool = false, providerMode: String? = nil, modelName: String? = nil,
+         status: String = "completed", finishReason: String? = nil,
+         continuationCount: Int = 0, isPartial: Bool = false) {
         self.role = role
         self.contentMarkdown = contentMarkdown
         self.contentPlainText = contentPlainText.isEmpty ? MarkdownSanitizer.plainText(from: contentMarkdown) : contentPlainText
@@ -660,6 +666,10 @@ final class ChatMessageRecord {
         self.isFallback = isFallback
         self.providerMode = providerMode
         self.modelName = modelName
+        self.status = status
+        self.finishReason = finishReason
+        self.continuationCount = continuationCount
+        self.isPartial = isPartial
     }
 }
 

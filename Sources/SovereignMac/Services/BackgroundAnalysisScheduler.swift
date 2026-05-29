@@ -108,20 +108,19 @@ final class BackgroundAnalysisScheduler: ObservableObject {
         )
 
         do {
-            let response = try await DeepSeekClient.shared.chat(
+            let result = try await DeepSeekClient.shared.chat(
                 systemPrompt: HealthPromptBuilder.systemPrompt(for: runtime),
                 userMessage: prompt
             )
 
             // Cache the response
             let hash = prompt.hashValue.description
-            let cache = AIAnalysisCache(promptHash: hash, response: response, modelUsed: "deepseek-v4-pro")
-            // Note: modelContext is not accessible from here; caller should persist
+            let cache = AIAnalysisCache(promptHash: hash, response: result.content, modelUsed: "deepseek-v4-pro")
 
             // Generate notification
             await NotificationService.shared.sendAnalysisCompleteNotification(
                 title: type == "morning_summary" ? "晨间分析已生成" : "晚间分析已生成",
-                body: String(response.prefix(100))
+                body: String(result.content.prefix(100))
             )
         } catch {
             await NotificationService.shared.sendAnalysisFailedNotification(error: error)

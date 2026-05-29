@@ -117,17 +117,65 @@ final class AIRequestCoordinator: ObservableObject {
         await MainActor.run { state = .thinking(phase: "调用 DeepSeek...") }
         guard !Task.isCancelled else { return }
 
+        let genSettings = AIModelGenerationSettings.load()
+        let systemPrompt = HealthPromptBuilder.systemPrompt(for: runtime)
+        let prompt = HealthPromptBuilder.buildUserPrompt(
+            question: question, context: context, runtime: runtime,
+            healthModel: healthModel, forecast: forecast, prescription: prescription
+        )
+        let evidence = "DeepSeek V4 · \(context.dataQuality.dateRangeStart) – \(context.dataQuality.dateRangeEnd)"
+            + (context.isMockData ? " · Demo" : "")
+
         do {
-            let prompt = HealthPromptBuilder.buildUserPrompt(
-                question: question, context: context, runtime: runtime,
-                healthModel: healthModel, forecast: forecast, prescription: prescription
-            )
-            let systemPrompt = HealthPromptBuilder.systemPrompt(for: runtime)
-            let response = try await DeepSeekClient.shared.chat(systemPrompt: systemPrompt, userMessage: prompt)
+            let result = try await DeepSeekClient.shared.chat(systemPrompt: systemPrompt, userMessage: prompt, settings: genSettings)
 
             await MainActor.run {
-                let evidence = "DeepSeek V4 · \(context.dataQuality.dateRangeStart) – \(context.dataQuality.dateRangeEnd)"
-                chatStore.appendAssistantMessage(markdown: response, runtime: runtime, evidence: evidence)
+                chatStore.appendAssistantMessage(markdown: result.content, runtime: runtime, evidence: evidence,
+                                                  finishReason: result.finishReason, isTruncated: result.isTruncated)
+
+                // Auto-continue if truncated
+                if result.isTruncated && genSettings.autoContinueWhenTruncated {
+                    self.state = .thinking(phase: "继续生成...")
+                }
+            }
+
+            // Auto-continuation loop
+            var fullContent = result.content
+            var continueCount = 0
+            let maxContinues = 3
+
+            while result.isTruncated && genSettings.autoContinueWhenTruncated && continueCount < maxContinues {
+                guard !Task.isCancelled else { return }
+                continueCount += 1
+
+                await MainActor.run { state = .thinking(phase: "继续生成 (\(continueCount)/\(maxContinues))...") }
+
+                do {
+                    let contResult = try await DeepSeekClient.shared.continueCompletion(
+                        systemPrompt: systemPrompt, originalQuestion: question,
+                        previousAnswer: fullContent, settings: genSettings
+                    )
+                    fullContent += "\n\n" + contResult.content
+
+                    await MainActor.run {
+                        chatStore.continueLastAssistantMessage(additionalMarkdown: contResult.content,
+                                                                finishReason: contResult.finishReason)
+                    }
+
+                    if contResult.finishReason == "stop" { break }
+                } catch {
+                    await MainActor.run {
+                        chatStore.updateLastMessage(finishReason: "continue_failed", status: "truncated")
+                        chatStore.appendSystemMessage("继续生成失败 (\(error.localizedDescription))。你可以点击「继续生成」重试。")
+                    }
+                    break
+                }
+            }
+
+            if continueCount >= maxContinues {
+                await MainActor.run {
+                    chatStore.updateLastMessage(finishReason: "max_continues", status: "truncated")
+                }
             }
         } catch {
             guard !Task.isCancelled else { return }
