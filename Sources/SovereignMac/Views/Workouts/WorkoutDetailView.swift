@@ -57,10 +57,10 @@ struct WorkoutDetailView: View {
                                 color: .pink
                             )
                         }
-                        if let energy = workout.activeEnergyKJ {
+                        if let kcal = workout.activeEnergyKcal {
                             DetailStatCard(
                                 title: "消耗能量",
-                                value: energy > 4184 ? String(format: "%.0f kcal", energy / 4.184) : "\(String(format: "%.0f", energy)) kJ",
+                                value: "\(String(format: "%.0f", kcal)) kcal",
                                 systemImage: "flame.fill",
                                 color: .orange
                             )
@@ -73,59 +73,165 @@ struct WorkoutDetailView: View {
                         )
                     }
 
-                    // Recovery suggestion
+                    // Training load details
                     CardView {
                         VStack(alignment: .leading, spacing: AppSpacing.sm) {
                             HStack {
-                                Image(systemName: "arrow.triangle.2.circlepath")
-                                    .foregroundColor(.blue)
-                                Text("恢复建议")
+                                Image(systemName: "chart.bar.fill")
+                                    .foregroundColor(.purple)
+                                Text("训练负荷")
                                     .font(AppTypography.title3)
                             }
+                            HStack {
+                                Text("计算方式")
+                                Spacer()
+                                Text(TrainingLoadAnalyzer.confidence(avgHeartRate: workout.avgHeartRate))
+                                    .foregroundColor(.secondary)
+                            }
+                            .font(AppTypography.callout)
                             Text(recoverySuggestion)
                                 .font(AppTypography.callout)
                                 .foregroundColor(.secondary)
                         }
                     }
 
-                    // Metadata
+                    // Raw data verification
                     CardView {
                         VStack(alignment: .leading, spacing: AppSpacing.sm) {
-                            Text("详情")
-                                .font(AppTypography.title3)
                             HStack {
-                                Text("数据来源")
-                                Spacer()
-                                Text(workout.source.rawValue)
-                                    .foregroundColor(.secondary)
+                                Image(systemName: "doc.text.magnifyingglass")
+                                    .foregroundColor(.blue)
+                                Text("原始数据核对")
+                                    .font(AppTypography.title3)
                             }
-                            if let notes = workout.notes {
+
+                            Divider()
+
+                            Group {
+                                // Duration verification
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Duration").font(AppTypography.caption.weight(.semibold)).foregroundColor(.secondary)
+                                    HStack {
+                                        Text("标准化")
+                                        Spacer()
+                                        Text(workout.durationFormatted)
+                                    }
+                                    if let raw = workout.rawDurationFormatted {
+                                        HStack {
+                                            Text("原始 Apple Health")
+                                            Spacer()
+                                            Text(raw).foregroundColor(.secondary)
+                                        }
+                                    }
+                                    HStack {
+                                        Text("来源")
+                                        Spacer()
+                                        Text(workout.durationSource ?? "—")
+                                            .foregroundColor(.secondary)
+                                    }
+                                    if let warning = workout.durationWarning {
+                                        HStack {
+                                            Image(systemName: "exclamationmark.triangle.fill")
+                                                .foregroundColor(.orange)
+                                            Text(warning)
+                                                .foregroundColor(.orange)
+                                        }
+                                        .font(AppTypography.caption2)
+                                    }
+                                }
+
+                                Divider()
+
+                                // Date/time
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("时间").font(AppTypography.caption.weight(.semibold)).foregroundColor(.secondary)
+                                    HStack {
+                                        Text("开始")
+                                        Spacer()
+                                        Text(formatDateTime(workout.startDate)).foregroundColor(.secondary)
+                                    }
+                                    HStack {
+                                        Text("结束")
+                                        Spacer()
+                                        Text(formatDateTime(workout.endDate)).foregroundColor(.secondary)
+                                    }
+                                }
+
+                                // Energy
+                                if let rawEnergy = workout.rawEnergyFormatted {
+                                    Divider()
+                                    HStack {
+                                        Text("原始能量")
+                                        Spacer()
+                                        Text(rawEnergy).foregroundColor(.secondary)
+                                    }
+                                    if let kcal = workout.activeEnergyKcal {
+                                        HStack {
+                                            Text("标准化")
+                                            Spacer()
+                                            Text("\(String(format: "%.0f", kcal)) kcal").foregroundColor(.secondary)
+                                        }
+                                    }
+                                }
+
+                                // Distance
+                                if let rawDist = workout.rawDistanceFormatted {
+                                    Divider()
+                                    HStack {
+                                        Text("原始距离")
+                                        Spacer()
+                                        Text(rawDist).foregroundColor(.secondary)
+                                    }
+                                    if let dist = workout.distanceFormatted {
+                                        HStack {
+                                            Text("标准化")
+                                            Spacer()
+                                            Text(dist).foregroundColor(.secondary)
+                                        }
+                                    }
+                                }
+
+                                // Source
+                                Divider()
                                 HStack {
-                                    Text("备注")
+                                    Text("来源")
                                     Spacer()
-                                    Text(notes)
+                                    Text(workout.sourceName ?? workout.source.rawValue)
                                         .foregroundColor(.secondary)
                                 }
+
+                                if let rawType = workout.rawWorkoutActivityType {
+                                    HStack {
+                                        Text("原始类型")
+                                        Spacer()
+                                        Text(rawType).font(AppTypography.caption2).foregroundColor(.secondary)
+                                    }
+                                }
                             }
+                            .font(AppTypography.caption)
                         }
                     }
                 }
                 .padding()
             }
         }
-        .frame(width: 500, height: 550)
+        .frame(width: 520, height: 600)
     }
 
     private var recoverySuggestion: String {
         let load = workout.trainingLoad
-        let durationHours = workout.durationSeconds / 3600
+        let minutes = workout.durationSeconds / 60
 
         if load > 150 {
-            return "这是一次高强度训练（负荷 \(String(format: "%.0f", load))）。建议：\n- 保证充足睡眠（7-8小时）\n- 适当补充蛋白质和水分\n- 下次高强度训练间隔至少48小时\n这仅是行为建议，不是运动医学指导。"
+            return "高强度训练（\(String(format: "%.0f", load)) 负荷）。建议保证 7-8h 睡眠，补充蛋白质和水分，高强度训练间隔 ≥ 48h。"
         } else if load > 80 {
-            return "中等强度训练。建议：\n- 充分休息和补水\n- 注意训练后的肌肉恢复\n- 保持规律作息"
+            return "中等强度。注意充分休息和补水，保持规律作息。"
+        } else if load > 20 {
+            return "低-中等强度。恢复需求较低，可较快恢复日常活动。"
+        } else if minutes < 2 {
+            return "⚠️ 时长异常短（\(String(format: "%.1f", minutes)) 分钟）。如果实际运动更长，说明原始数据 unit 解析可能有误。"
         } else {
-            return "低到中等强度训练。恢复需求较低，可以较快恢复日常活动。保持活动有助于整体健康。"
+            return "低强度活动。保持规律运动有助于整体健康。"
         }
     }
 

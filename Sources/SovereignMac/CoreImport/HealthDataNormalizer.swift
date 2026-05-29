@@ -37,21 +37,28 @@ struct HealthDataNormalizer {
     func normalizeWorkouts(_ parsed: [ParsedWorkout]) -> [WorkoutSession] {
         parsed.map { p in
             let workoutType = mapWorkoutType(p.type)
-            let durationSeconds = p.durationSeconds > 0 ? p.durationSeconds : p.endDate.timeIntervalSince(p.startDate)
 
-            // Convert distance to meters
-            var distanceMeters: Double? = nil
-            if let dist = p.distanceMeters {
-                distanceMeters = convertDistanceToMeters(dist, unit: "km") // Apple Health uses km for distance in Workout elements
-            }
+            // Normalize duration using raw unit
+            let (durationSeconds, durationSource, durationWarning) = HealthUnitNormalizer.durationToSeconds(
+                value: p.rawDuration,
+                unit: p.rawDurationUnit,
+                dateBasedSeconds: p.dateBasedDurationSeconds
+            )
 
-            // Convert energy to kJ
-            var energyKJ: Double? = nil
-            if let energy = p.energyKJ {
-                energyKJ = convertValue(energy, fromUnit: "kJ", toUnit: "kJ", metricType: .activeEnergy)
-            }
+            // Normalize distance to meters using raw unit
+            let distanceMeters = HealthUnitNormalizer.distanceToMeters(
+                value: p.rawDistance,
+                unit: p.rawDistanceUnit
+            )
+
+            // Normalize energy to kcal using raw unit
+            let activeEnergyKcal = HealthUnitNormalizer.energyToKcal(
+                value: p.rawEnergy,
+                unit: p.rawEnergyUnit
+            )
 
             let load = TrainingLoadAnalyzer.calculateLoad(
+                workoutType: workoutType,
                 durationMinutes: durationSeconds / 60,
                 avgHeartRate: p.avgHeartRate,
                 maxHeartRate: p.maxHeartRate
@@ -65,9 +72,19 @@ struct HealthDataNormalizer {
                 distanceMeters: distanceMeters,
                 avgHeartRate: p.avgHeartRate,
                 maxHeartRate: p.maxHeartRate,
-                activeEnergyKJ: energyKJ,
+                activeEnergyKcal: activeEnergyKcal,
                 trainingLoad: load,
-                source: .appleHealthImport
+                source: .appleHealthImport,
+                sourceName: p.sourceName,
+                rawWorkoutActivityType: p.originalType,
+                rawDuration: p.rawDuration,
+                rawDurationUnit: p.rawDurationUnit,
+                rawDistance: p.rawDistance,
+                rawDistanceUnit: p.rawDistanceUnit,
+                rawEnergy: p.rawEnergy,
+                rawEnergyUnit: p.rawEnergyUnit,
+                durationSource: durationSource.rawValue,
+                durationWarning: durationWarning
             )
         }
     }

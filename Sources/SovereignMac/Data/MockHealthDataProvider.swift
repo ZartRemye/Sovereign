@@ -211,6 +211,7 @@ actor MockHealthDataProvider {
                 let endDate = startDate.addingTimeInterval(duration)
 
                 let load = TrainingLoadAnalyzer.calculateLoad(
+                    workoutType: type,
                     durationMinutes: duration / 60,
                     avgHeartRate: avgHR,
                     maxHeartRate: maxHR
@@ -224,7 +225,7 @@ actor MockHealthDataProvider {
                     distanceMeters: distance.map { $0 * 1000 },
                     avgHeartRate: avgHR,
                     maxHeartRate: maxHR,
-                    activeEnergyKJ: duration / 60 * Double.random(in: 15...40),
+                    activeEnergyKcal: duration / 60 * Double.random(in: 15...40) / 4.184,
                     trainingLoad: load,
                     source: .mockLive
                 ))

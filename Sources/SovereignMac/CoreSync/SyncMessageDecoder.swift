@@ -22,7 +22,7 @@ struct SyncMessageDecoder {
             distanceMeters: syncWorkout.distanceMeters,
             avgHeartRate: syncWorkout.avgHeartRate,
             maxHeartRate: syncWorkout.maxHeartRate,
-            activeEnergyKJ: syncWorkout.activeEnergyKJ,
+            activeEnergyKcal: syncWorkout.activeEnergyKJ != nil ? syncWorkout.activeEnergyKJ! / 4.184 : nil,
             source: .iphoneSync
         )
     }

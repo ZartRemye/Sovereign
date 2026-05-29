@@ -39,7 +39,7 @@ struct HealthSafetyGuard {
         .suddenHeadache: ["剧烈头痛", "突然剧烈头痛", "雷击样头痛", "thunderclap headache", "头痛欲裂"],
         .selfHarm: ["自残", "割腕", "self harm", "伤害自己", "自伤"],
         .suicide: ["自杀", "想死", "不想活", "suicide", "结束生命", "寻死", "不想活了"],
-        .medicationDosage: ["该吃多少药", "药量多少", "开什么药", "处方药", "降压药剂量", "吃什么药能治"],
+        .medicationDosage: ["该吃多少药", "药量多少", "开什么药", "处方药", "降压药", "吃什么药能治"],
         .medicalDiagnosis: ["是不是得了心脏病", "是不是得了癌症", "诊断一下", "我得了什么病"],
     ]
 

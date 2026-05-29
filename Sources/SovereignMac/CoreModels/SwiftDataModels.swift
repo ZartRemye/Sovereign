@@ -136,14 +136,36 @@ final class WorkoutSession {
     var workoutTypeRaw: String = WorkoutType.other.rawValue
     var startDate: Date = Date()
     var endDate: Date = Date()
+
+    // Standardized fields
     var durationSeconds: Double = 0
     var distanceMeters: Double?
     var avgHeartRate: Double?
     var maxHeartRate: Double?
-    var activeEnergyKJ: Double?
+    var activeEnergyKcal: Double?   // Now in kcal (was KJ)
     var trainingLoad: Double = 0
     var sourceRaw: String = DataSource.unknown.rawValue
+    var sourceName: String?
     var notes: String?
+
+    // Raw Apple Health fields (for traceability)
+    var rawWorkoutActivityType: String?
+    var rawDuration: Double?
+    var rawDurationUnit: String?
+    var rawDistance: Double?
+    var rawDistanceUnit: String?
+    var rawEnergy: Double?
+    var rawEnergyUnit: String?
+
+    // Duration diagnostics
+    var durationSource: String?     // "Apple Health duration" or "Start/End Date"
+    var durationWarning: String?    // Mismatch warning if AH duration ≠ dates
+
+    // Legacy compatibility
+    var activeEnergyKJ: Double? {
+        get { (activeEnergyKcal != nil) ? activeEnergyKcal! * 4.184 : nil }
+        set { activeEnergyKcal = (newValue != nil) ? newValue! / 4.184 : nil }
+    }
 
     var workoutType: WorkoutType {
         WorkoutType(rawValue: workoutTypeRaw) ?? .other
@@ -154,10 +176,11 @@ final class WorkoutSession {
     }
 
     var durationFormatted: String {
-        let hours = Int(durationSeconds) / 3600
-        let minutes = (Int(durationSeconds) % 3600) / 60
-        if hours > 0 { return "\(hours)h \(minutes)m" }
-        return "\(minutes)m"
+        HealthUnitNormalizer.formatDuration(seconds: durationSeconds)
+    }
+
+    var durationMinutes: Double {
+        durationSeconds / 60
     }
 
     var distanceFormatted: String? {
@@ -168,14 +191,39 @@ final class WorkoutSession {
         return String(format: "%.0f m", meters)
     }
 
-    var activeEnergyKcal: Double? {
-        guard let kj = activeEnergyKJ else { return nil }
-        return kj / 4.184
+    var rawDurationFormatted: String? {
+        guard let raw = rawDuration else { return nil }
+        if let unit = rawDurationUnit {
+            return "\(String(format: "%.2f", raw)) \(unit)"
+        }
+        return "\(String(format: "%.2f", raw))"
+    }
+
+    var rawEnergyFormatted: String? {
+        guard let raw = rawEnergy else { return nil }
+        if let unit = rawEnergyUnit {
+            return "\(String(format: "%.0f", raw)) \(unit)"
+        }
+        return "\(String(format: "%.0f", raw))"
+    }
+
+    var rawDistanceFormatted: String? {
+        guard let raw = rawDistance else { return nil }
+        if let unit = rawDistanceUnit {
+            return "\(String(format: "%.2f", raw)) \(unit)"
+        }
+        return "\(String(format: "%.2f", raw))"
     }
 
     init(workoutType: WorkoutType, startDate: Date, endDate: Date, durationSeconds: Double,
          distanceMeters: Double? = nil, avgHeartRate: Double? = nil, maxHeartRate: Double? = nil,
-         activeEnergyKJ: Double? = nil, trainingLoad: Double = 0, source: DataSource = .unknown, notes: String? = nil) {
+         activeEnergyKcal: Double? = nil, trainingLoad: Double = 0, source: DataSource = .unknown,
+         sourceName: String? = nil, notes: String? = nil,
+         rawWorkoutActivityType: String? = nil,
+         rawDuration: Double? = nil, rawDurationUnit: String? = nil,
+         rawDistance: Double? = nil, rawDistanceUnit: String? = nil,
+         rawEnergy: Double? = nil, rawEnergyUnit: String? = nil,
+         durationSource: String? = nil, durationWarning: String? = nil) {
         self.workoutTypeRaw = workoutType.rawValue
         self.startDate = startDate
         self.endDate = endDate
@@ -183,10 +231,20 @@ final class WorkoutSession {
         self.distanceMeters = distanceMeters
         self.avgHeartRate = avgHeartRate
         self.maxHeartRate = maxHeartRate
-        self.activeEnergyKJ = activeEnergyKJ
+        self.activeEnergyKcal = activeEnergyKcal
         self.trainingLoad = trainingLoad
         self.sourceRaw = source.rawValue
+        self.sourceName = sourceName
         self.notes = notes
+        self.rawWorkoutActivityType = rawWorkoutActivityType
+        self.rawDuration = rawDuration
+        self.rawDurationUnit = rawDurationUnit
+        self.rawDistance = rawDistance
+        self.rawDistanceUnit = rawDistanceUnit
+        self.rawEnergy = rawEnergy
+        self.rawEnergyUnit = rawEnergyUnit
+        self.durationSource = durationSource
+        self.durationWarning = durationWarning
     }
 }
 

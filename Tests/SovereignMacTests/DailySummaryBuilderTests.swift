@@ -1,5 +1,5 @@
 import XCTest
-@testable import Sovereign
+@testable import SovereignMac
 
 final class DailySummaryBuilderTests: XCTestCase {
     func testBuildsSummaryFromMetrics() {

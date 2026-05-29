@@ -1,9 +1,9 @@
 import XCTest
-@testable import Sovereign
+@testable import SovereignMac
 
 final class TrainingLoadAnalyzerTests: XCTestCase {
     func testBasicLoadCalculation() {
-        let load = TrainingLoadAnalyzer.calculateLoad(
+        let load = TrainingLoadAnalyzer.calculateLoad(workoutType: .other,
             durationMinutes: 30,
             avgHeartRate: 150,
             maxHeartRate: 175,
@@ -13,20 +13,20 @@ final class TrainingLoadAnalyzerTests: XCTestCase {
     }
 
     func testLowIntensityLoad() {
-        let highLoad = TrainingLoadAnalyzer.calculateLoad(
+        let highLoad = TrainingLoadAnalyzer.calculateLoad(workoutType: .other,
             durationMinutes: 30, avgHeartRate: 150, maxHeartRate: 175
         )
-        let lowLoad = TrainingLoadAnalyzer.calculateLoad(
+        let lowLoad = TrainingLoadAnalyzer.calculateLoad(workoutType: .other,
             durationMinutes: 30, avgHeartRate: 90, maxHeartRate: 120
         )
         XCTAssertGreaterThan(highLoad, lowLoad, "Higher HR should produce higher load")
     }
 
     func testDurationProportionality() {
-        let shortLoad = TrainingLoadAnalyzer.calculateLoad(
+        let shortLoad = TrainingLoadAnalyzer.calculateLoad(workoutType: .other,
             durationMinutes: 15, avgHeartRate: 140, maxHeartRate: 160
         )
-        let longLoad = TrainingLoadAnalyzer.calculateLoad(
+        let longLoad = TrainingLoadAnalyzer.calculateLoad(workoutType: .other,
             durationMinutes: 60, avgHeartRate: 140, maxHeartRate: 160
         )
         XCTAssertGreaterThan(longLoad, shortLoad, "Longer duration should produce higher load")

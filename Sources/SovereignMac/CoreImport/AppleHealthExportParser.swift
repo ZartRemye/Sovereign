@@ -29,8 +29,11 @@ final class AppleHealthExportParser: NSObject, XMLParserDelegate {
     // Workout fields
     private var currentWorkoutType = ""
     private var currentWorkoutDuration = ""
+    private var currentWorkoutDurationUnit = ""
     private var currentWorkoutDistance = ""
+    private var currentWorkoutDistanceUnit = ""
     private var currentWorkoutEnergy = ""
+    private var currentWorkoutEnergyUnit = ""
 
     // Progress tracking
     private let progressStream: ProgressTrackingInputStream?
@@ -124,8 +127,11 @@ final class AppleHealthExportParser: NSObject, XMLParserDelegate {
         } else if elementName == "Workout" {
             currentWorkoutType = attributeDict["workoutActivityType"] ?? ""
             currentWorkoutDuration = attributeDict["duration"] ?? ""
+            currentWorkoutDurationUnit = attributeDict["durationUnit"] ?? ""
             currentWorkoutDistance = attributeDict["totalDistance"] ?? ""
+            currentWorkoutDistanceUnit = attributeDict["totalDistanceUnit"] ?? ""
             currentWorkoutEnergy = attributeDict["totalEnergyBurned"] ?? ""
+            currentWorkoutEnergyUnit = attributeDict["totalEnergyBurnedUnit"] ?? ""
             currentRecordStartDate = attributeDict["startDate"] ?? ""
             currentRecordEndDate = attributeDict["endDate"] ?? ""
             currentRecordSourceName = attributeDict["sourceName"] ?? ""
@@ -241,18 +247,27 @@ final class AppleHealthExportParser: NSObject, XMLParserDelegate {
         }
 
         let typeName = normalizeWorkoutType(currentWorkoutType)
-        let duration = Double(currentWorkoutDuration) ?? (endDate.timeIntervalSince(startDate))
-        let distance = Double(currentWorkoutDistance)
-        let energy = Double(currentWorkoutEnergy)
+        let rawDuration = Double(currentWorkoutDuration)
+        let rawDurationUnit = currentWorkoutDurationUnit.isEmpty ? nil : currentWorkoutDurationUnit
+        let dateBasedSeconds = endDate.timeIntervalSince(startDate)
+
+        let rawDistance = Double(currentWorkoutDistance)
+        let rawDistanceUnit = currentWorkoutDistanceUnit.isEmpty ? nil : currentWorkoutDistanceUnit
+        let rawEnergy = Double(currentWorkoutEnergy)
+        let rawEnergyUnit = currentWorkoutEnergyUnit.isEmpty ? nil : currentWorkoutEnergyUnit
 
         let workout = ParsedWorkout(
             type: typeName,
             originalType: currentWorkoutType,
             startDate: startDate,
             endDate: endDate,
-            durationSeconds: duration,
-            distanceMeters: distance,
-            energyKJ: energy,
+            rawDuration: rawDuration,
+            rawDurationUnit: rawDurationUnit,
+            dateBasedDurationSeconds: dateBasedSeconds,
+            rawDistance: rawDistance,
+            rawDistanceUnit: rawDistanceUnit,
+            rawEnergy: rawEnergy,
+            rawEnergyUnit: rawEnergyUnit,
             avgHeartRate: nil,
             maxHeartRate: nil,
             sourceName: currentRecordSourceName.isEmpty ? nil : currentRecordSourceName
@@ -565,9 +580,18 @@ struct ParsedWorkout {
     let originalType: String
     let startDate: Date
     let endDate: Date
-    let durationSeconds: Double
-    let distanceMeters: Double?
-    let energyKJ: Double?
+
+    // Raw Apple Health fields
+    let rawDuration: Double?
+    let rawDurationUnit: String?
+    let dateBasedDurationSeconds: Double
+
+    let rawDistance: Double?
+    let rawDistanceUnit: String?
+
+    let rawEnergy: Double?
+    let rawEnergyUnit: String?
+
     let avgHeartRate: Double?
     let maxHeartRate: Double?
     let sourceName: String?

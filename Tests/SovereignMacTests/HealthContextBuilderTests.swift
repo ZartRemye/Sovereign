@@ -1,5 +1,5 @@
 import XCTest
-@testable import Sovereign
+@testable import SovereignMac
 
 final class HealthContextBuilderTests: XCTestCase {
     func testBuildsContextFromData() {
@@ -13,8 +13,8 @@ final class HealthContextBuilderTests: XCTestCase {
                 date: date,
                 steps: 8000 + Int.random(in: -500...500),
                 restingHeartRate: 62,
-                sleepDurationSeconds: 28800,
-                activeEnergyKJ: 2000,
+                sleepHours: 8.0,
+                activeEnergy: 2000,
                 exerciseMinutes: 30,
                 recoveryScore: 70,
                 trainingLoad: 50
@@ -31,7 +31,7 @@ final class HealthContextBuilderTests: XCTestCase {
         )
 
         XCTAssertTrue(context.isMockData)
-        XCTAssertEqual(context.dataSource, "Mock Live")
+        XCTAssertEqual(context.dataSource, "Demo Data")
         XCTAssertFalse(context.sevenDaySummary.dailySteps.isEmpty)
         XCTAssertFalse(context.thirtyDaySummary.recoveryTrend.isEmpty)
     }

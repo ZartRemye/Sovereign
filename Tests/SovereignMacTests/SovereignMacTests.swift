@@ -1,5 +1,5 @@
 import XCTest
-@testable import Sovereign
+@testable import SovereignMac
 
 final class SovereignMacTests: XCTestCase {
     func testMockDataGeneration() async {
